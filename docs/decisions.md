@@ -1,0 +1,1 @@
+# 鉴于使用gorm框架要维护和ops-agent-backend里完全一样的表结构，并且由于obs-api里的查询基本都是聚合的，所以gorm的ORM能力反而用不上，原生SQL更直白。
