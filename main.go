@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"obs-api/internal/handler"
+	"obs-api/internal/logstore"
 	"obs-api/internal/router"
 	"os"
 	"os/signal"
@@ -46,8 +48,12 @@ func main() {
 
 	log.Println("obs-mysql 连接成功")
 
+	// 初始化 logstore 和 handler
+	store := logstore.NewMysqlStore(db)
+	lh := handler.NewLogHandler(store)
+
 	// 注册路由
-	r := router.SetupRouter(db)
+	r := router.SetupRouter(db, lh)
 
 	addr := getEnv("ADDR", ":8081")
 	srv := &http.Server{

@@ -3,11 +3,12 @@ package router
 import (
 	"database/sql"
 	"net/http"
+	"obs-api/internal/handler"
 
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter(db *sql.DB) *gin.Engine {
+func SetupRouter(db *sql.DB, lh *handler.LogHandler) *gin.Engine {
 	r := gin.Default()
 
 	r.GET("/health", func(c *gin.Context) {
@@ -18,10 +19,9 @@ func SetupRouter(db *sql.DB) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// TODO: 注册业务路由
 	api := r.Group("/api/v1")
 	{
-		_ = api // 占位，后续在此注册路由
+		api.GET("/logs/stats", lh.Stats)
 	}
 
 	return r
