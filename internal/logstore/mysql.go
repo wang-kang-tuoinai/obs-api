@@ -68,7 +68,7 @@ func (s *MysqlStore) QueryStats(ctx context.Context, q StatsQuery) (*StatsResult
 	defer rows2.Close()
 	for rows2.Next() {
 		var tc TemplateItem
-		if err := rows2.Scan(&tc.Template, &tc.Count); err != nil {
+		if err := rows2.Scan(&tc.Template, &tc.Level, &tc.Count); err != nil {
 			return nil, err
 		}
 		template_count = append(template_count, tc)

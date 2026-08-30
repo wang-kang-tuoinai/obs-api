@@ -13,6 +13,7 @@ type StatsQuery struct {
 
 type TemplateItem struct {
 	Template string
+	Level    string
 	Count    int64
 }
 
