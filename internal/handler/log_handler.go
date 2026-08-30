@@ -49,6 +49,29 @@ func (h *LogHandler) Stats(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// 从 StatsResult 组装 StatsSummary
+	var total, errorCount int64
+	for _, cnt := range result.ByLevel {
+		total += cnt
+	}
+	if ec, ok := result.ByLevel[lg.LevelError]; ok {
+		errorCount = ec
+	}
+	var errorRate float64
+	if total > 0 {
+		errorRate = float64(errorCount) / float64(total)
+	}
 
-	c.JSON(http.StatusOK, result)
+	resp := lg.LogStatsResponse{
+		Summary: lg.StatsSummary{
+			Window:       lg.Window{Start: start, End: end},
+			Total:        total,
+			ErrorCount:   errorCount,
+			ErrorRate:    errorRate,
+			ByLevel:      result.ByLevel,
+			TopTemplates: result.TopTemplates,
+		},
+		GeneratedAt: time.Now().Unix(),
+	}
+	c.JSON(http.StatusOK, resp)
 }
