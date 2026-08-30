@@ -18,6 +18,7 @@ func NewMysqlStore(db *sql.DB) *MysqlStore {
 
 func (s *MysqlStore) QueryStats(ctx context.Context, q StatsQuery) (*StatsResult, error) {
 	conds := []string{"ts BETWEEN ? AND ?"}
+	// 数据库里是毫秒而参数是秒，所以需要转换
 	args := []any{q.Start * 1000, q.End * 1000}
 	// 可选参数判断是否为空
 	if q.Service != "" {
