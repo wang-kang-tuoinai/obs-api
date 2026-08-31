@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -59,7 +60,7 @@ func (h *LogHandler) Stats(c *gin.Context) {
 	}
 	var errorRate float64
 	if total > 0 {
-		errorRate = float64(errorCount) / float64(total)
+		errorRate = math.Round(float64(errorCount)/float64(total)*10000) / 10000
 	}
 
 	resp := lg.LogStatsResponse{
