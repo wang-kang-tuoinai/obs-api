@@ -19,19 +19,7 @@ func NewLogHandler(store lg.LogStore) *LogHandler {
 }
 
 func (h *LogHandler) Stats(c *gin.Context) {
-	now := time.Now().Unix()
-
-	start, _ := strconv.ParseInt(c.Query("start"), 10, 64)
-	end, _ := strconv.ParseInt(c.Query("end"), 10, 64)
-	if end <= 0 {
-		end = now
-	}
-	if start <= 0 {
-		start = end - 3600 // 默认最近 1 小时
-	}
-	if end-start > 7*24*3600 { // 窗口封顶 7 天
-		start = end - 7*24*3600
-	}
+	start, end := parseTimeRange(c)
 
 	topN, _ := strconv.Atoi(c.Query("top_n"))
 	if topN <= 0 || topN > 50 {
@@ -76,3 +64,44 @@ func (h *LogHandler) Stats(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, resp)
 }
+
+func (h *LogHandler) Templates(c *gin.Context) {
+	start, end := parseTimeRange(c)
+
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+
+	items, err := h.store.QueryTemplates(c.Request.Context(), lg.TemplatesQuery{
+		Service: c.Query("service"),
+		Level:   c.Query("level"),
+		Route:   c.Query("route"),
+		Start:   start,
+		End:     end,
+		Limit:   limit,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, lg.TemplatesResponse{Items: items})
+}
+
+// parseTimeRange 解析 start/end 秒级时间窗：默认最近 1 小时，窗口封顶 7 天。
+func parseTimeRange(c *gin.Context) (start, end int64) {
+	now := time.Now().Unix()
+	start, _ = strconv.ParseInt(c.Query("start"), 10, 64)
+	end, _ = strconv.ParseInt(c.Query("end"), 10, 64)
+	if end <= 0 {
+		end = now
+	}
+	if start <= 0 {
+		start = end - 3600 // 默认最近 1 小时
+	}
+	if end-start > 7*24*3600 { // 窗口封顶 7 天
+		start = end - 7*24*3600
+	}
+	return start, end
+}
+

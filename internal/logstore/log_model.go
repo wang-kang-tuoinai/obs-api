@@ -1,5 +1,7 @@
 package logstore
 
+import "encoding/json"
+
 const LevelError = "ERROR"
 
 type StatsQuery struct {
@@ -38,4 +40,31 @@ type StatsSummary struct {
 type LogStatsResponse struct {
 	Summary     StatsSummary `json:"summary"`
 	GeneratedAt int64        `json:"generated_at"`
+}
+
+type TemplatesQuery struct {
+	Service string
+	Level   string
+	Route   string
+	Start   int64 // 秒级
+	End     int64
+	Limit   int // 返回模板数上限
+}
+
+type TemplateSample struct {
+	Ts      int64           `json:"ts"`
+	TraceID string          `json:"trace_id"`
+	Attrs   json.RawMessage `json:"attrs"`
+}
+
+type TemplateStat struct {
+	Template  string         `json:"template"`
+	Count     int64          `json:"count"`
+	FirstSeen int64          `json:"first_seen"`
+	LastSeen  int64          `json:"last_seen"`
+	Sample    TemplateSample `json:"sample"`
+}
+
+type TemplatesResponse struct {
+	Items []TemplateStat `json:"items"`
 }

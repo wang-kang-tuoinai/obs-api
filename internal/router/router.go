@@ -22,6 +22,7 @@ func SetupRouter(db *sql.DB, lh *handler.LogHandler) *gin.Engine {
 	api := r.Group("/api/v1")
 	{
 		api.GET("/logs/stats", lh.Stats)
+		api.GET("/logs/templates", lh.Templates)
 	}
 
 	return r
