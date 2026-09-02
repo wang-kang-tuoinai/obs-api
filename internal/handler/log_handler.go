@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -88,6 +89,46 @@ func (h *LogHandler) Templates(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, lg.TemplatesResponse{Items: items})
+}
+
+func (h *LogHandler) Search(c *gin.Context) {
+	start, end := parseTimeRange(c)
+
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	// 游标格式 "ts:id"，ts 为毫秒
+	var cursorTs int64
+	var cursorID uint64
+	if cursor := c.Query("cursor"); cursor != "" {
+		parts := strings.SplitN(cursor, ":", 2)
+		if len(parts) == 2 {
+			cursorTs, _ = strconv.ParseInt(parts[0], 10, 64)
+			cursorID, _ = strconv.ParseUint(parts[1], 10, 64)
+		}
+	}
+
+	result, err := h.store.QuerySearch(c.Request.Context(), lg.SearchQuery{
+		Service:  c.Query("service"),
+		Level:    c.Query("level"),
+		Route:    c.Query("route"),
+		Method:   c.Query("method"),
+		TraceID:  c.Query("trace_id"),
+		Template: c.Query("template"),
+		Keyword:  c.Query("keyword"),
+		Start:    start,
+		End:      end,
+		Limit:    limit,
+		CursorTs: cursorTs,
+		CursorID: cursorID,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 // parseTimeRange 解析 start/end 秒级时间窗：默认最近 1 小时，窗口封顶 7 天。

@@ -70,3 +70,35 @@ type TemplateStat struct {
 type TemplatesResponse struct {
 	Items []TemplateStat `json:"items"`
 }
+
+type SearchQuery struct {
+	Service  string
+	Level    string
+	Route    string
+	Method   string
+	TraceID  string
+	Template string
+	Keyword  string
+	Start    int64 // 秒级
+	End      int64
+	Limit    int
+	CursorTs int64  // 游标 ts（毫秒）
+	CursorID uint64 // 游标 id
+}
+
+type LogItem struct {
+	Ts       int64           `json:"ts"`
+	Level    string          `json:"level"`
+	Service  string          `json:"service"`
+	Route    string          `json:"route"`
+	Method   string          `json:"method"`
+	Template string          `json:"template"`
+	Attrs    json.RawMessage `json:"attrs"`
+	TraceID  string          `json:"trace_id"`
+}
+
+type SearchResult struct {
+	Items      []LogItem `json:"items"`
+	NextCursor *string   `json:"next_cursor"`
+	HasMore    bool      `json:"has_more"`
+}

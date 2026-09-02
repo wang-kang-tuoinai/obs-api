@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -167,4 +168,111 @@ LIMIT ?`
 		return nil, err
 	}
 	return items, nil
+}
+
+func (s *MysqlStore) QuerySearch(ctx context.Context, q SearchQuery) (*SearchResult, error) {
+	conds := []string{"ts BETWEEN ? AND ?"}
+	// 数据库里是毫秒而参数是秒，所以需要转换
+	args := []any{q.Start * 1000, q.End * 1000}
+	if q.Service != "" {
+		conds = append(conds, "service = ?")
+		args = append(args, q.Service)
+	}
+	if q.Route != "" {
+		conds = append(conds, "route = ?")
+		args = append(args, q.Route)
+	}
+	if q.Method != "" {
+		conds = append(conds, "method = ?")
+		args = append(args, q.Method)
+	}
+	if q.Level != "" {
+		conds = append(conds, "level = ?")
+		args = append(args, q.Level)
+	}
+	if q.TraceID != "" {
+		conds = append(conds, "trace_id = ?")
+		args = append(args, q.TraceID)
+	}
+	if q.Template != "" {
+		conds = append(conds, "template = ?")
+		args = append(args, q.Template)
+	}
+	if q.Keyword != "" {
+		// 模糊子串：搜模板字符串 + attrs 文本，须配合时间窗 + limit
+		conds = append(conds, "(template LIKE ? OR CAST(attrs AS CHAR) LIKE ?)")
+		kw := "%" + q.Keyword + "%"
+		args = append(args, kw, kw)
+	}
+	// 游标分页（keyset）：取游标之后更旧的日志
+	if q.CursorTs > 0 {
+		conds = append(conds, "(ts < ? OR (ts = ? AND id < ?))")
+		args = append(args, q.CursorTs, q.CursorTs, q.CursorID)
+	}
+	where := strings.Join(conds, " AND ")
+
+	sqlStr := "SELECT ts, level, service, route, method, template, attrs, trace_id, id FROM logs WHERE " +
+		where + " ORDER BY ts DESC, id DESC LIMIT ?"
+	args = append(args, q.Limit+1) // 多取一条判断是否还有下一页
+
+	rows, err := s.db.QueryContext(ctx, sqlStr, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]LogItem, 0, q.Limit)
+	var (
+		lastTs int64
+		lastID uint64
+		count  int
+	)
+	for rows.Next() {
+		var (
+			ts       int64
+			level    string
+			service  string
+			route    string
+			method   string
+			template string
+			attrs    []byte
+			traceID  string
+			id       uint64
+		)
+		if err := rows.Scan(&ts, &level, &service, &route, &method, &template, &attrs, &traceID, &id); err != nil {
+			return nil, err
+		}
+		count++
+		if count > q.Limit {
+			// 多取的那条只用于判断 has_more，不返回
+			continue
+		}
+		attrsJSON := json.RawMessage(attrs)
+		if len(attrs) == 0 {
+			attrsJSON = json.RawMessage("{}")
+		}
+		items = append(items, LogItem{
+			Ts:       ts / 1000, // 毫秒 → 秒
+			Level:    level,
+			Service:  service,
+			Route:    route,
+			Method:   method,
+			Template: template,
+			Attrs:    attrsJSON,
+			TraceID:  traceID,
+		})
+		lastTs = ts
+		lastID = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	hasMore := count > q.Limit
+	var nextCursor *string
+	if hasMore {
+		c := fmt.Sprintf("%d:%d", lastTs, lastID)
+		nextCursor = &c
+	}
+	return &SearchResult{Items: items, NextCursor: nextCursor, HasMore: hasMore}, nil
 }
