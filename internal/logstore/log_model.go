@@ -7,6 +7,7 @@ const LevelError = "ERROR"
 type StatsQuery struct {
 	Service string
 	Route   string
+	Method  string
 	Level   string
 	Start   int64 // 秒级
 	End     int64
@@ -46,6 +47,7 @@ type TemplatesQuery struct {
 	Service string
 	Level   string
 	Route   string
+	Method  string
 	Start   int64 // 秒级
 	End     int64
 	Limit   int // 返回模板数上限

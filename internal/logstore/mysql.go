@@ -30,6 +30,10 @@ func (s *MysqlStore) QueryStats(ctx context.Context, q StatsQuery) (*StatsResult
 		conds = append(conds, "route = ?")
 		args = append(args, q.Route)
 	}
+	if q.Method != "" {
+		conds = append(conds, "method = ?")
+		args = append(args, q.Method)
+	}
 	if q.Level != "" {
 		conds = append(conds, "level = ?")
 		args = append(args, q.Level)
@@ -91,6 +95,10 @@ func (s *MysqlStore) QueryTemplates(ctx context.Context, q TemplatesQuery) ([]Te
 	if q.Route != "" {
 		conds = append(conds, "route = ?")
 		args = append(args, q.Route)
+	}
+	if q.Method != "" {
+		conds = append(conds, "method = ?")
+		args = append(args, q.Method)
 	}
 	if q.Level != "" {
 		conds = append(conds, "level = ?")

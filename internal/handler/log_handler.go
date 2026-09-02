@@ -29,6 +29,7 @@ func (h *LogHandler) Stats(c *gin.Context) {
 	result, err := h.store.QueryStats(c.Request.Context(), lg.StatsQuery{
 		Service: c.Query("service"),
 		Route:   c.Query("route"),
+		Method:  c.Query("method"),
 		Level:   c.Query("level"),
 		Start:   start,
 		End:     end,
@@ -77,6 +78,7 @@ func (h *LogHandler) Templates(c *gin.Context) {
 		Service: c.Query("service"),
 		Level:   c.Query("level"),
 		Route:   c.Query("route"),
+		Method:  c.Query("method"),
 		Start:   start,
 		End:     end,
 		Limit:   limit,
