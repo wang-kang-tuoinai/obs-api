@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	lg "obs-api/internal/logstore"
+
+	"github.com/gin-gonic/gin"
 )
 
 type LogHandler struct {
@@ -67,6 +68,18 @@ func (h *LogHandler) Stats(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+//TODO Template接口返回的sample字段只取了最新的一条log，但是这条log可能会发生在多个路由，
+// 容易让大模型误以为这个Template只发生在某个路由上，
+// 后续可以考虑返回多条sample，或者返回sample的路由列表
+
+//TODO- [ ] internal server error 模板过于笼统，同一模板下可能混着多种不同根因
+//   （mysql 连接失败、cache 反序列化失败、bcrypt 失败等）。
+//   当前 templates 接口的 sample 只取最新一条，可能掩盖占比更高的其他错误。
+
+// 候选方案：
+// 1. 按 error wrapping 前缀分成几个子模板（便宜，但字符串匹配脆弱）
+// 2. 定义分层的哨兵错误类型，HandleError 按类型精确分类（正确，成本高）
+// 3. templates 接口支持返回多条 sample 或错误分布（改接口，treat symptom）
 func (h *LogHandler) Templates(c *gin.Context) {
 	start, end := parseTimeRange(c)
 
@@ -147,4 +160,3 @@ func parseTimeRange(c *gin.Context) (start, end int64) {
 	}
 	return start, end
 }
-
