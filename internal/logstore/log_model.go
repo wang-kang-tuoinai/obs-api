@@ -15,9 +15,9 @@ type StatsQuery struct {
 }
 
 type TemplateItem struct {
-	Template string
-	Level    string
-	Count    int64
+	Template string `json:"template"`
+	Level    string `json:"level"`
+	Count    int64  `json:"count"`
 }
 
 type StatsResult struct {
@@ -41,6 +41,7 @@ type StatsSummary struct {
 type LogStatsResponse struct {
 	Summary     StatsSummary `json:"summary"`
 	GeneratedAt int64        `json:"generated_at"`
+	Notices     []string     `json:"notices,omitempty"`
 }
 
 type TemplatesQuery struct {
@@ -71,7 +72,8 @@ type TemplateStat struct {
 }
 
 type TemplatesResponse struct {
-	Items []TemplateStat `json:"items"`
+	Items   []TemplateStat `json:"items"`
+	Notices []string       `json:"notices,omitempty"`
 }
 
 type SearchQuery struct {
@@ -104,4 +106,5 @@ type SearchResult struct {
 	Items      []LogItem `json:"items"`
 	NextCursor *string   `json:"next_cursor"`
 	HasMore    bool      `json:"has_more"`
+	Notices    []string  `json:"notices,omitempty"`
 }

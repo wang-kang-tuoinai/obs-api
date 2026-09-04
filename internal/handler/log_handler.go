@@ -21,11 +21,12 @@ func NewLogHandler(store lg.LogStore) *LogHandler {
 }
 
 func (h *LogHandler) Stats(c *gin.Context) {
-	start, end := parseTimeRange(c)
+	start, end, notices := parseTimeRange(c)
 
 	topN, _ := strconv.Atoi(c.Query("top_n"))
 	if topN <= 0 || topN > 50 {
 		topN = 10
+		notices = append(notices, "top_n 超出范围（1-50），已设为 10")
 	}
 
 	result, err := h.store.QueryStats(c.Request.Context(), lg.StatsQuery{
@@ -64,6 +65,7 @@ func (h *LogHandler) Stats(c *gin.Context) {
 			TopTemplates: result.TopTemplates,
 		},
 		GeneratedAt: time.Now().Unix(),
+		Notices:     notices,
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -81,11 +83,12 @@ func (h *LogHandler) Stats(c *gin.Context) {
 // 2. 定义分层的哨兵错误类型，HandleError 按类型精确分类（正确，成本高）
 // 3. templates 接口支持返回多条 sample 或错误分布（改接口，treat symptom）
 func (h *LogHandler) Templates(c *gin.Context) {
-	start, end := parseTimeRange(c)
+	start, end, notices := parseTimeRange(c)
 
 	limit, _ := strconv.Atoi(c.Query("limit"))
 	if limit <= 0 || limit > 500 {
 		limit = 200
+		notices = append(notices, "limit 超出范围（1-500），已设为 200")
 	}
 
 	items, err := h.store.QueryTemplates(c.Request.Context(), lg.TemplatesQuery{
@@ -101,15 +104,16 @@ func (h *LogHandler) Templates(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, lg.TemplatesResponse{Items: items})
+	c.JSON(http.StatusOK, lg.TemplatesResponse{Items: items, Notices: notices})
 }
 
 func (h *LogHandler) Search(c *gin.Context) {
-	start, end := parseTimeRange(c)
+	start, end, notices := parseTimeRange(c)
 
 	limit, _ := strconv.Atoi(c.Query("limit"))
 	if limit <= 0 || limit > 100 {
 		limit = 50
+		notices = append(notices, "limit 超出范围（1-100），已设为 50")
 	}
 
 	// 游标格式 "ts:id"，ts 为毫秒
@@ -117,9 +121,16 @@ func (h *LogHandler) Search(c *gin.Context) {
 	var cursorID uint64
 	if cursor := c.Query("cursor"); cursor != "" {
 		parts := strings.SplitN(cursor, ":", 2)
-		if len(parts) == 2 {
-			cursorTs, _ = strconv.ParseInt(parts[0], 10, 64)
-			cursorID, _ = strconv.ParseUint(parts[1], 10, 64)
+		if len(parts) != 2 {
+			notices = append(notices, "cursor 格式非法，已忽略")
+		} else {
+			ts, err1 := strconv.ParseInt(parts[0], 10, 64)
+			id, err2 := strconv.ParseUint(parts[1], 10, 64)
+			if err1 != nil || err2 != nil {
+				notices = append(notices, "cursor 数值非法，已忽略")
+			} else {
+				cursorTs, cursorID = ts, id
+			}
 		}
 	}
 
@@ -141,22 +152,31 @@ func (h *LogHandler) Search(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	result.Notices = notices
 	c.JSON(http.StatusOK, result)
 }
 
 // parseTimeRange 解析 start/end 秒级时间窗：默认最近 1 小时，窗口封顶 7 天。
-func parseTimeRange(c *gin.Context) (start, end int64) {
+// 对参数的默认/修正会记录到 notices 返回，供上层告知调用方。
+func parseTimeRange(c *gin.Context) (start, end int64, notices []string) {
 	now := time.Now().Unix()
 	start, _ = strconv.ParseInt(c.Query("start"), 10, 64)
 	end, _ = strconv.ParseInt(c.Query("end"), 10, 64)
 	if end <= 0 {
 		end = now
+		notices = append(notices, "end 未提供或非法，已默认为当前时间")
 	}
 	if start <= 0 {
 		start = end - 3600 // 默认最近 1 小时
+		notices = append(notices, "start 未提供或非法，已默认为 end 前 1 小时")
 	}
 	if end-start > 7*24*3600 { // 窗口封顶 7 天
 		start = end - 7*24*3600
+		notices = append(notices, "时间窗口超过 7 天，已截断为最近 7 天")
 	}
-	return start, end
+	if start >= end {
+		start = end - 3600
+		notices = append(notices, "start 大于等于 end，已重置为 end 前 1 小时")
+	}
+	return start, end, notices
 }
