@@ -107,17 +107,20 @@ func (s *MysqlStore) QueryTemplates(ctx context.Context, q TemplatesQuery) ([]Te
 	}
 	where := strings.Join(conds, " AND ")
 
-	// 窗口函数：每个 template 取最新一条（rn=1），带聚合计数与首末时间
-	sqlStr := `SELECT template, cnt, first_seen, last_seen, sample_ts, sample_trace_id, sample_attrs
+	// 窗口函数：按 (template, level) 分组，每组取最新一条（rn=1），带聚合计数与首末时间
+	sqlStr := `SELECT template, level, cnt, first_seen, last_seen,
+       sample_ts, sample_trace_id, sample_route, sample_method, sample_attrs
 FROM (
-	SELECT template,
-		COUNT(*) OVER (PARTITION BY template) AS cnt,
-		MIN(ts) OVER (PARTITION BY template) AS first_seen,
-		MAX(ts) OVER (PARTITION BY template) AS last_seen,
-		ts AS sample_ts,
-		trace_id AS sample_trace_id,
-		attrs AS sample_attrs,
-		ROW_NUMBER() OVER (PARTITION BY template ORDER BY ts DESC, id DESC) AS rn
+	SELECT template, level,
+		COUNT(*)      OVER (PARTITION BY template, level) AS cnt,
+		MIN(ts)       OVER (PARTITION BY template, level) AS first_seen,
+		MAX(ts)       OVER (PARTITION BY template, level) AS last_seen,
+		ts        AS sample_ts,
+		trace_id  AS sample_trace_id,
+		route     AS sample_route,
+		method    AS sample_method,
+		attrs     AS sample_attrs,
+		ROW_NUMBER() OVER (PARTITION BY template, level ORDER BY ts DESC, id DESC) AS rn
 	FROM logs
 	WHERE ` + where + `
 ) t
@@ -136,15 +139,18 @@ LIMIT ?`
 	items := make([]TemplateStat, 0)
 	for rows.Next() {
 		var (
-			template  string
-			count     int64
-			firstSeen int64
-			lastSeen  int64
-			sampleTs  int64
-			sampleTID string
-			attrs     []byte
+			template    string
+			level       string
+			count       int64
+			firstSeen   int64
+			lastSeen    int64
+			sampleTs    int64
+			sampleTID   string
+			sampleRoute string
+			sampleMeth  string
+			attrs       []byte
 		)
-		if err := rows.Scan(&template, &count, &firstSeen, &lastSeen, &sampleTs, &sampleTID, &attrs); err != nil {
+		if err := rows.Scan(&template, &level, &count, &firstSeen, &lastSeen, &sampleTs, &sampleTID, &sampleRoute, &sampleMeth, &attrs); err != nil {
 			return nil, err
 		}
 		// attrs 可能为 NULL，兜底成空对象
@@ -154,12 +160,15 @@ LIMIT ?`
 		}
 		items = append(items, TemplateStat{
 			Template:  template,
+			Level:     level,
 			Count:     count,
 			FirstSeen: firstSeen / 1000, // 毫秒 → 秒
 			LastSeen:  lastSeen / 1000,
 			Sample: TemplateSample{
 				Ts:      sampleTs / 1000,
 				TraceID: sampleTID,
+				Route:   sampleRoute,
+				Method:  sampleMeth,
 				Attrs:   attrsJSON,
 			},
 		})

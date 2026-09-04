@@ -56,11 +56,14 @@ type TemplatesQuery struct {
 type TemplateSample struct {
 	Ts      int64           `json:"ts"`
 	TraceID string          `json:"trace_id"`
+	Route   string          `json:"route"`
+	Method  string          `json:"method"`
 	Attrs   json.RawMessage `json:"attrs"`
 }
 
 type TemplateStat struct {
 	Template  string         `json:"template"`
+	Level     string         `json:"level"`
 	Count     int64          `json:"count"`
 	FirstSeen int64          `json:"first_seen"`
 	LastSeen  int64          `json:"last_seen"`
