@@ -20,6 +20,14 @@ func NewLogHandler(store lg.LogStore) *LogHandler {
 	return &LogHandler{store: store}
 }
 
+//TODO - [ ] logs/stats 的 error_count 包含双重计数（access log 5xx + 业务 ERROR），
+//   Agent 目前靠自己推导才能得到真实失败请求数（观察到它两次都推对了，
+//   但依赖"所有 5xx 都走 HandleError"这个可能失效的假设）。
+	
+//   候选方案：
+//   1. 加 kind 列（access/business），响应里单独给 failed_requests
+//   2. 消除双重计数（中间件不记 ERROR，或 HandleError 不记）
+//   3. 维持现状，靠模型推导
 func (h *LogHandler) Stats(c *gin.Context) {
 	start, end, notices := parseTimeRange(c)
 
