@@ -98,22 +98,29 @@ func normalizeTags(tags []jaegerTag) (attrs map[string]any, kind, status, status
 	return
 }
 
-// 从span的log字段中提取error
+// extractError 从 span 的 log 事件中提取异常信息。
+// 格式："ExceptionType: exception message"，无 type 时退化为纯 message。
 func extractError(logs []jaegerLog) string {
 	for _, l := range logs {
-		isException, msg := false, ""
+		var isException bool
+		var excType, excMsg string
 		for _, f := range l.Fields {
-			if f.Key == "event" {
+			switch f.Key {
+			case "event":
 				if v, _ := f.Value.(string); v == "exception" {
 					isException = true
 				}
-			}
-			if f.Key == "exception.message" {
-				msg, _ = f.Value.(string)
+			case "exception.type":
+				excType, _ = f.Value.(string)
+			case "exception.message":
+				excMsg, _ = f.Value.(string)
 			}
 		}
-		if isException && msg != "" {
-			return msg
+		if isException && excMsg != "" {
+			if excType != "" {
+				return excType + ": " + excMsg
+			}
+			return excMsg
 		}
 	}
 	return ""
