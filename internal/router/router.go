@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter(db *sql.DB, lh *handler.LogHandler) *gin.Engine {
+func SetupRouter(db *sql.DB, lh *handler.LogHandler, th *handler.TraceHandler) *gin.Engine {
 	r := gin.Default()
 
 	r.GET("/health", func(c *gin.Context) {
@@ -24,6 +24,8 @@ func SetupRouter(db *sql.DB, lh *handler.LogHandler) *gin.Engine {
 		api.GET("/logs/stats", lh.Stats)
 		api.GET("/logs/templates", lh.Templates)
 		api.GET("/logs/search", lh.Search)
+
+		api.GET("/traces/:trace_id", th.GetTrace)
 	}
 
 	return r

@@ -10,6 +10,7 @@ import (
 	"obs-api/internal/handler"
 	"obs-api/internal/logstore"
 	"obs-api/internal/router"
+	"obs-api/internal/tracestore"
 	"os"
 	"os/signal"
 	"syscall"
@@ -51,9 +52,12 @@ func main() {
 	// 初始化 logstore 和 handler
 	store := logstore.NewMysqlStore(db)
 	lh := handler.NewLogHandler(store)
+	jaegerBaseURL := getEnv("JAEGER_BASE_URL", "http://jaeger:16686")
+	tp := tracestore.NewJaegerProvider(jaegerBaseURL)
+	th := handler.NewTraceHandler(tp)
 
 	// 注册路由
-	r := router.SetupRouter(db, lh)
+	r := router.SetupRouter(db, lh, th)
 
 	addr := getEnv("ADDR", ":8081")
 	srv := &http.Server{
