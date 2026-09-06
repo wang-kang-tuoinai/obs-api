@@ -21,6 +21,10 @@ func NewJaegerProvider(baseURL string) *JaegerProvider {
 		},
 	}
 }
+
+// TODO每个span里的error记录exception.type:exception.message,现在只记录了exception.message
+// TODOmysql中间件里记录的"db.collection.name": "users","db.operation.name": "","db.query.summary": " users",可以删掉前两个
+// TODOGetTrace现在有两层作用，供AI分析单个Trace的工具，作为其他工具的基础设施，所以对GetTrace返回给agent的工具需要过滤一下
 func (p *JaegerProvider) GetTrace(ctx context.Context, traceID string) (*Trace, error) {
 	// 1. 发 HTTP 请求到 Jaeger
 	url := fmt.Sprintf("%s/api/traces/%s", p.baseURL, traceID)
