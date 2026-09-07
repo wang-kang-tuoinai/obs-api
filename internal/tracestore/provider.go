@@ -33,6 +33,7 @@ type Trace struct {
 
 
 type TraceProvider interface {
-    GetTrace(ctx context.Context, traceID string) (*Trace, error)
-    // FindTraces(ctx context.Context, q TraceQuery) ([]*Trace, error)
+	GetTrace(ctx context.Context, traceID string) (*Trace, error)
+	// fetchNotices 包含跳过非入口/结构异常的说明，供上层在 notices 里提示用户
+	FindTraces(ctx context.Context, q TraceQuery) ([]*Trace, []string, error)
 }
