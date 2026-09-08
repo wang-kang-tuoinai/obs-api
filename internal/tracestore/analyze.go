@@ -24,7 +24,7 @@ func BuildTrace(traceID string, spans []*Span) (*Trace, error) {
 	if root.Kind != "server" {
 		return nil, ErrNotEntrypoint
 	}
-	
+
 	computeSelfMs(root)
 	status := classifyStatus(root)
 	origin := findErrorOrigin(root)
@@ -108,12 +108,21 @@ func computeSelfMs(s *Span) {
 
 // classifyStatus 根据根节点及其后代判断整条链路的状态。
 // failed：根节点本身出错；degraded：后代有错但根正常；ok：无错。
+//
+// HTTP 状态码过滤规则（优先于 span status）：
+//   - 4xx (400-499)：由于4xx说明错误已经被服务处理，并且可以避免mysql中间件对正常的键重复记error
+//   - 5xx 或其他非 4xx：继续走常规的 isErrorSpan / hasErrorDescendant 判断。
+//
 // isErrorSpan 判断单个 span 是否出错：Status 标记为 error，或从 logs 提取到了异常消息。
 func isErrorSpan(s *Span) bool {
 	return s.Status == "error" || s.Error != ""
 }
 
 func classifyStatus(root *Span) string {
+	// HTTP 4xx：客户端侧错误，不视为服务端 failed/degraded。
+	if code, ok := root.Attrs["http.response.status_code"].(float64); ok && code >= 400 && code < 500 {
+		return "ok"
+	}
 	if isErrorSpan(root) {
 		return "failed"
 	}
@@ -164,8 +173,8 @@ func firstNonEmpty(vals ...string) string {
 
 // StatsResult 是 Aggregate 的输出，描述一批 Trace 的整体健康状况。
 type StatsResult struct {
-	TotalTraces int            `json:"total_traces"`
-	ByStatus    map[string]int `json:"by_status"`    // ok / degraded / failed
+	TotalTraces int              `json:"total_traces"`
+	ByStatus    map[string]int   `json:"by_status"`   // ok / degraded / failed
 	Entrypoints []EntrypointStat `json:"entrypoints"` // 按调用量降序
 }
 

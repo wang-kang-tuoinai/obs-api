@@ -143,6 +143,7 @@ func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string)
 	return traces, notices, nil
 }
 
+// 需要被丢弃掉的Tag
 var dropTags = map[string]bool{
 	"otel.scope.name": true, "otel.scope.version": true,
 	"network.peer.address": true, "network.peer.port": true,
