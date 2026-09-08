@@ -38,6 +38,12 @@ func (h *TraceHandler) GetTrace(c *gin.Context) {
 	c.JSON(http.StatusOK, trace)
 }
 
+//	TODOif len(rawTraces) >= limit {
+//	    notices = append(notices, fmt.Sprintf(
+//	        "返回的 trace 数达到上限 %d，统计结果可能只覆盖时间窗内最新的部分请求。"+
+//	        "如需完整覆盖，请缩小时间窗后分段查询。", limit))
+//	}
+//
 // Stats 按条件批量拉取链路并聚合统计。
 // GET /api/v1/traces/stats?service=X&operation=Y&start=s&end=e&limit=N
 //
