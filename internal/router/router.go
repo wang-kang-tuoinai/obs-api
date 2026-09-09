@@ -26,6 +26,7 @@ func SetupRouter(db *sql.DB, lh *handler.LogHandler, th *handler.TraceHandler) *
 		api.GET("/logs/search", lh.Search)
 
 		api.GET("/traces/stats", th.Stats)
+		api.GET("/traces/search", th.Search)
 		api.GET("/traces/:trace_id", th.GetTrace)
 	}
 

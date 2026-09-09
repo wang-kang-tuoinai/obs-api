@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -41,21 +42,35 @@ type TraceQuery struct {
 // TODOGetTrace现在有两层作用，供AI分析单个Trace的工具，作为其他工具的基础设施，所以对GetTrace返回给agent的工具需要过滤一下
 func (p *JaegerProvider) GetTrace(ctx context.Context, traceID string) (*Trace, error) {
 	rawURL := fmt.Sprintf("%s/api/traces/%s", p.baseURL, traceID)
-	traces, _, err := p.fetchAndBuildTraces(ctx, rawURL)
+	r, err := p.fetchAndBuildTraces(ctx, rawURL)
 	if err != nil {
 		return nil, err
 	}
-	if len(traces) == 0 {
+	if len(r.Traces) == 0 {
 		return nil, nil // trace 不存在
 	}
-	return traces[0], nil
+	return r.Traces[0], nil
 }
 
 // FindTraces 按条件从 Jaeger 拉取一批 Trace。
 // 返回值：成功解析的 Trace 列表、跳过原因的 notices、错误。
 func (p *JaegerProvider) FindTraces(ctx context.Context, q TraceQuery) ([]*Trace, []string, error) {
 	rawURL := p.buildQueryURL(q)
-	return p.fetchAndBuildTraces(ctx, rawURL)
+	r, err := p.fetchAndBuildTraces(ctx, rawURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	notices := r.Notices
+	// 返回条数达到上限时，说明更早的数据可能被截断，提示调用方分段查询
+	if r.RawCount >= q.Limit && r.EarliestMs != math.MaxInt64 {
+		notices = append(notices, fmt.Sprintf(
+			"返回条数达到上限 %d，实际只覆盖 %s 之后的请求（请求窗口起点是 %s），"+
+				"更早的时间段需要分段查询",
+			q.Limit,
+			time.UnixMilli(r.EarliestMs).Format("15:04:05"),
+			time.Unix(q.Start/1000, 0).Format("15:04:05")))
+	}
+	return r.Traces, notices, nil
 }
 
 // buildQueryURL 将 TraceQuery 转成 Jaeger /api/traces 的查询 URL。
@@ -80,39 +95,58 @@ func (p *JaegerProvider) buildQueryURL(q TraceQuery) string {
 	return fmt.Sprintf("%s/api/traces?%s", p.baseURL, params.Encode())
 }
 
+// fetchResult 是 fetchAndBuildTraces 的返回结构，聚合多个返回值以便扩展。
+type fetchResult struct {
+	Traces     []*Trace // 成功解析的 Trace 列表
+	RawCount   int      // Jaeger 原始返回的 trace 数量（含被跳过的）
+	EarliestMs int64    // 所有原始 span 中最早的开始时间（ms），含被过滤掉的拨号 trace
+	Notices    []string // 跳过原因等提示
+}
+
 // fetchAndBuildTraces 是共用的底层方法：发 HTTP 请求 → 解析 jaegerResponse → 逐条 BuildTrace。
 // 适用于 GetTrace（/api/traces/{id}）和 FindTraces（/api/traces?...）两种 URL 形式。
-// 返回值：成功解析的 Trace 列表、跳过原因的 notices、错误。
-func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string) ([]*Trace, []string, error) {
+func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string) (fetchResult, error) {
 	// 1. 发 HTTP 请求
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("构造请求失败: %w", err)
+		return fetchResult{}, fmt.Errorf("构造请求失败: %w", err)
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("请求 Jaeger 失败: %w", err)
+		return fetchResult{}, fmt.Errorf("请求 Jaeger 失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil, nil // trace 不存在
+		return fetchResult{}, nil // trace 不存在
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("Jaeger 返回非 200 状态码: %d", resp.StatusCode)
+		return fetchResult{}, fmt.Errorf("Jaeger 返回非 200 状态码: %d", resp.StatusCode)
 	}
 
 	// 2. 解析 jaegerResponse
 	var jr jaegerResponse
 	if err := json.NewDecoder(resp.Body).Decode(&jr); err != nil {
-		return nil, nil, fmt.Errorf("解析 Jaeger 响应失败: %w", err)
+		return fetchResult{}, fmt.Errorf("解析 Jaeger 响应失败: %w", err)
 	}
 	if len(jr.Data) == 0 {
-		return nil, nil, nil
+		return fetchResult{}, nil
+	}
+
+	rawCount := len(jr.Data)
+
+	// 基于所有原始 span 算最早时间，包括拨号 trace（单位：µs → ms）
+	var earliestUs int64 = math.MaxInt64
+	for _, jt := range jr.Data {
+		for _, js := range jt.Spans {
+			if js.StartTime < earliestUs {
+				earliestUs = js.StartTime
+			}
+		}
 	}
 
 	// 3. 逐条归一化 Span + BuildTrace
-	traces := make([]*Trace, 0, len(jr.Data))
+	traces := make([]*Trace, 0, rawCount)
 	var skippedNonEntry, skippedBroken int
 	for _, jt := range jr.Data {
 		spans := make([]*Span, 0, len(jt.Spans))
@@ -140,7 +174,12 @@ func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string)
 		notices = append(notices, fmt.Sprintf(
 			"有 %d 条 trace 结构异常无法解析，可能是数据不完整", skippedBroken))
 	}
-	return traces, notices, nil
+	return fetchResult{
+		Traces:     traces,
+		RawCount:   rawCount,
+		EarliestMs: earliestUs / 1000, // µs → ms
+		Notices:    notices,
+	}, nil
 }
 
 // 需要被丢弃掉的Tag
