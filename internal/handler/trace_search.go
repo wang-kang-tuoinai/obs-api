@@ -3,7 +3,6 @@ package handler
 import (
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -56,57 +55,12 @@ func (h *TraceHandler) Search(c *gin.Context) {
 	}
 	notices = append(notices, fetchedNotices...)
 	notices = append(notices, "仅在本次 Jaeger 返回且成功解析的候选中筛选和排序；空结果不代表整个时间窗口无异常，排序不保证全窗口最慢")
-	matches := make([]*tracestore.Trace, 0)
-	for _, t := range traces {
-		if t == nil || t.Root == nil {
-			continue
-		}
-		// TODO 现在是单体服务，根据t.Root.Service != service判断没问题，
-		// 如果是多服务，那么root.service是整个请求的入口，不一定是你在请求你指定的service
-		// Jaeger may match any span; enforce the public root-entrypoint contract here.
-		if t.Root.Service != service || (operation != "" && t.RootOperation != operation) || t.Root.StartMs < start*1000 || t.Root.StartMs > end*1000 {
-			continue
-		}
-		if (status != "" && t.Status != status) || t.DurationMs < minimum {
-			continue
-		}
-		matches = append(matches, t)
-	}
-	sort.Slice(matches, func(i, j int) bool {
-		a, b := matches[i], matches[j]
-		if order == "duration_desc" && a.DurationMs != b.DurationMs {
-			return a.DurationMs > b.DurationMs
-		}
-		if a.Root.StartMs != b.Root.StartMs {
-			return a.Root.StartMs > b.Root.StartMs
-		}
-		return a.TraceID < b.TraceID
+	result := tracestore.Search(traces, tracestore.SearchOptions{
+		Service: service, Operation: operation, StartMs: start * 1000, EndMs: end * 1000,
+		Status: status, MinDurationMs: minimum, Sort: order, Limit: limit,
 	})
-	matched := len(matches)
-	if len(matches) > limit {
-		matches = matches[:limit]
-	}
-	items := make([]gin.H, 0, len(matches))
-	for _, t := range matches {
-		item := gin.H{"trace_id": t.TraceID, "service": t.Root.Service, "operation": t.RootOperation, "start_ms": t.Root.StartMs, "duration_ms": t.DurationMs, "status": t.Status}
-		// One representative error is evidence, not a verified root cause.
-		if t.ErrorOrigin != "" {
-			item["error_summary"] = gin.H{"operation": shortTraceText(t.ErrorOrigin), "message": shortTraceText(t.ErrorDesc)}
-		}
-		if len(t.Warnings) > 0 {
-			item["warnings"] = t.Warnings
-		}
-		items = append(items, item)
-	}
-	c.JSON(http.StatusOK, gin.H{"items": items, "meta": gin.H{
-		"window": gin.H{"start": start, "end": end}, "fetch_limit": fetchLimit, "fetched_count": len(traces), "matched_count": matched, "returned_count": len(items), "has_more_matches": matched > len(items),
+	// TODO 这里可以定义一个返回模型
+	c.JSON(http.StatusOK, gin.H{"items": result.Items, "meta": gin.H{
+		"window": gin.H{"start": start, "end": end}, "fetch_limit": fetchLimit, "fetched_count": len(traces), "matched_count": result.MatchedCount, "returned_count": len(result.Items), "has_more_matches": result.HasMoreMatches,
 	}, "notices": notices})
-}
-
-func shortTraceText(s string) string {
-	r := []rune(s)
-	if len(r) > 240 {
-		return string(r[:240]) + "…"
-	}
-	return s
 }

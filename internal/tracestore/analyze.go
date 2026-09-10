@@ -3,7 +3,6 @@ package tracestore
 import (
 	"fmt"
 	"math"
-	"sort"
 )
 
 // ErrNotEntrypoint 表示该 Trace 的根 span 不是服务入口（Kind != "server"）。
@@ -46,47 +45,6 @@ func BuildTrace(traceID string, spans []*Span) (*Trace, error) {
 			fmt.Sprintf("%d 个 span 的父节点不在本次返回中，已从树中丢弃", orphans))
 	}
 	return t, nil
-}
-
-// buildTree 把扁平 span 列表挂成树，返回根节点和孤儿数量。
-// 根判定双判据：ParentSpanID 为空，且优先选 Kind == "server" 的节点。
-func buildTree(spans []*Span) (root *Span, orphans int) {
-	byID := make(map[string]*Span, len(spans))
-	for _, s := range spans {
-		byID[s.SpanID] = s
-	}
-
-	for _, s := range spans {
-		if s.ParentSpanID == "" {
-			if root == nil || s.Kind == "server" {
-				root = s
-			}
-			continue
-		}
-		if p, ok := byID[s.ParentSpanID]; ok {
-			p.Children = append(p.Children, s)
-		} else {
-			// 父 span 不在这批数据里（trace 被截断），当作孤儿丢弃
-			orphans++
-		}
-	}
-
-	// 按 StartMs 排序，让 Agent 看到的顺序和时间轴一致
-	sortChildren(root)
-	return root, orphans
-}
-
-// sortChildren 递归地按 StartMs 对每层 Children 排序。
-func sortChildren(s *Span) {
-	if s == nil {
-		return
-	}
-	sort.Slice(s.Children, func(i, j int) bool {
-		return s.Children[i].StartMs < s.Children[j].StartMs
-	})
-	for _, c := range s.Children {
-		sortChildren(c)
-	}
 }
 
 // computeSelfMs 递归计算每个 span 的自身耗时（DurationMs 减去所有直接子节点之和）。
@@ -142,8 +100,8 @@ func hasErrorDescendant(s *Span) bool {
 	return false
 }
 
-// findErrorOrigin 返回第一个（按 StartMs 最早）出错的叶子或内部 span，
-// 优先选没有出错子节点的 error span（即错误最初发生的节点，而非传播路径上的中间层）。
+// findErrorOrigin 按已排序子树深度优先查找，优先返回后代中的代表性出错节点。
+// 该节点不保证是全局最早错误，也不代表已经确认的根因。
 func findErrorOrigin(s *Span) *Span {
 	if s == nil {
 		return nil
@@ -167,90 +125,4 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
-}
-
-// ---- 聚合统计 ----
-
-// StatsResult 是 Aggregate 的输出，描述一批 Trace 的整体健康状况。
-type StatsResult struct {
-	TotalTraces int              `json:"total_traces"`
-	ByStatus    map[string]int   `json:"by_status"`   // ok / degraded / failed
-	Entrypoints []EntrypointStat `json:"entrypoints"` // 按调用量降序
-}
-
-// EntrypointStat 描述某个入口操作（root operation）的统计数据。
-type EntrypointStat struct {
-	Operation string  `json:"operation"`
-	Count     int     `json:"count"`
-	P50Ms     float64 `json:"p50_ms"`
-	P95Ms     float64 `json:"p95_ms"`
-	P99Ms     float64 `json:"p99_ms"`
-	Failed    int     `json:"failed"`
-	Degraded  int     `json:"degraded"`
-}
-
-const smallSampleThreshold = 20
-
-// Aggregate 将一批 Trace 按 RootOperation 分组并计算耗时百分位与状态分布。
-// 返回聚合结果和可附加到响应 notices 的提示列表。
-func Aggregate(traces []*Trace) (*StatsResult, []string) {
-	byStatus := map[string]int{"ok": 0, "degraded": 0, "failed": 0}
-	grouped := map[string][]*Trace{}
-
-	for _, t := range traces {
-		byStatus[t.Status]++
-		grouped[t.RootOperation] = append(grouped[t.RootOperation], t)
-	}
-
-	var notices []string
-	eps := make([]EntrypointStat, 0, len(grouped))
-	for op, ts := range grouped {
-		durations := make([]float64, 0, len(ts))
-		var failed, degraded int
-		for _, t := range ts {
-			durations = append(durations, t.DurationMs)
-			switch t.Status {
-			case "failed":
-				failed++
-			case "degraded":
-				degraded++
-			}
-		}
-		sort.Float64s(durations)
-		if len(durations) < smallSampleThreshold {
-			notices = append(notices,
-				fmt.Sprintf("操作 %q 样本量较小（%d 条），百分位仅供参考", op, len(durations)))
-		}
-		eps = append(eps, EntrypointStat{
-			Operation: op,
-			Count:     len(ts),
-			P50Ms:     percentile(durations, 0.50),
-			P95Ms:     percentile(durations, 0.95),
-			P99Ms:     percentile(durations, 0.99),
-			Failed:    failed,
-			Degraded:  degraded,
-		})
-	}
-	sort.Slice(eps, func(i, j int) bool { return eps[i].Count > eps[j].Count })
-
-	return &StatsResult{
-		TotalTraces: len(traces),
-		ByStatus:    byStatus,
-		Entrypoints: eps,
-	}, notices
-}
-
-// percentile 在已升序排列的切片上计算第 p 百分位数（p ∈ [0,1]），结果保留 3 位小数。
-func percentile(sorted []float64, p float64) float64 {
-	if len(sorted) == 0 {
-		return 0
-	}
-	idx := int(math.Ceil(p*float64(len(sorted)))) - 1
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(sorted) {
-		idx = len(sorted) - 1
-	}
-	return math.Round(sorted[idx]*1000) / 1000
 }
