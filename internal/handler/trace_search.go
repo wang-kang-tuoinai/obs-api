@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"obs-api/internal/tracestore"
 
@@ -28,6 +29,11 @@ func (h *TraceHandler) Search(c *gin.Context) {
 			return
 		}
 		minimum = value
+		// Jaeger 使用 time.ParseDuration；提前拒绝超出其表示范围的值。
+		if _, err := time.ParseDuration(strconv.FormatFloat(value, 'f', -1, 64) + "ms"); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "min_duration_ms 超出 Jaeger 支持的耗时范围"})
+			return
+		}
 	}
 	start, end, notices := parseTimeRange(c)
 	readLimit := func(name string, fallback, maximum int) int {
@@ -45,9 +51,9 @@ func (h *TraceHandler) Search(c *gin.Context) {
 	limit := readLimit("limit", 10, 50)
 	fetchLimit := readLimit("fetch_limit", 200, 500)
 	operation := c.Query("operation")
-	// TODO 如果jaeger支持minDurations，是否可以直接把minDurations拼进查询字符串
 	traces, fetchedNotices, err := h.provider.FindTraces(c.Request.Context(), tracestore.TraceQuery{
 		Service: service, Operation: operation, Start: start * 1000, End: end * 1000, Limit: fetchLimit,
+		MinDurationMs: minimum,
 	})
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -59,8 +65,14 @@ func (h *TraceHandler) Search(c *gin.Context) {
 		Service: service, Operation: operation, StartMs: start * 1000, EndMs: end * 1000,
 		Status: status, MinDurationMs: minimum, Sort: order, Limit: limit,
 	})
-	// TODO 这里可以定义一个返回模型
-	c.JSON(http.StatusOK, gin.H{"items": result.Items, "meta": gin.H{
-		"window": gin.H{"start": start, "end": end}, "fetch_limit": fetchLimit, "fetched_count": len(traces), "matched_count": result.MatchedCount, "returned_count": len(result.Items), "has_more_matches": result.HasMoreMatches,
-	}, "notices": notices})
+	c.JSON(http.StatusOK, TraceSearchResponse{
+		Items: result.Items,
+		Meta: TraceSearchMeta{
+			Window:     TraceWindow{Start: start, End: end},
+			FetchLimit: fetchLimit, FetchedCount: len(traces),
+			MatchedCount: result.MatchedCount, ReturnedCount: len(result.Items),
+			HasMoreMatches: result.HasMoreMatches,
+		},
+		Notices: notices,
+	})
 }

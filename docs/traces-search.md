@@ -79,7 +79,9 @@ GET /api/v1/traces/search?service=ops-agent-backend&operation=GET%20%2Fapi%2Fv1%
 
 ## 查询边界和错误
 
-先按服务、operation 和时间从 Jaeger 获取最多 fetch_limit 条候选，再校验根入口并在本地按状态和耗时筛选、排序，最后取 limit 条。两个 limit 独立；fetch_limit 小于 limit 时不会自动扩大候选范围。
+先按服务、operation、时间及耗时下限从 Jaeger 获取最多 fetch_limit 条候选，再校验根入口并在本地按状态和根耗时筛选、排序，最后取 limit 条。两个 limit 独立；fetch_limit 小于 limit 时不会自动扩大候选范围。
+
+对外 min_duration_ms 保持毫秒数值；大于 0 时转换为 Jaeger 的 minDuration 参数，例如 100.5 → minDuration=100.5ms；不传或为 0 时省略该参数。超过 Go time.Duration 可表示范围的值返回 400。Jaeger 筛选候选 Span，本地仍校验根 Span 耗时，避免异步子操作等情况误入结果。meta.fetched_count 因此是上游耗时过滤后成功解析的候选数；Stats 未设置耗时下限，不受影响。
 
 该接口不提供游标分页，不保证全窗口扫描，也不承诺全窗口最慢 Top N。达到候选上限时应缩小时间窗口分段查询；提高 limit 只会增加输出，不会增加候选。即使 items 为空，也可能是候选内没有匹配项，不能据此断言系统无故障。原始候选截断提示沿用 provider 的 notices。
 

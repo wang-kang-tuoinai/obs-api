@@ -31,7 +31,7 @@ func TestSearchContract(t *testing.T) {
 		root := &tracestore.Span{SpanID: id, Service: "app", Operation: op, Kind: "server", StartMs: 1500000, DurationMs: d, Children: []*tracestore.Span{{SpanID: "child", Operation: "redis", Status: "error", Error: "timeout"}}}
 		return &tracestore.Trace{TraceID: id, Root: root, RootOperation: op, DurationMs: d, Status: "degraded", ErrorOrigin: "redis", ErrorDesc: "timeout"}
 	}
-	p := &searchProvider{traces: []*tracestore.Trace{makeTrace("a", "GET /users", 100), makeTrace("b", "GET /users", 300), makeTrace("c", "redis", 500)}}
+	p := &searchProvider{traces: []*tracestore.Trace{makeTrace("a", "GET /users", 100), makeTrace("b", "GET /users", 300), makeTrace("c", "redis", 500), makeTrace("short-root", "GET /users", 50)}}
 	r := gin.New()
 	r.GET("/traces/search", NewTraceHandler(p).Search)
 	w := httptest.NewRecorder()
@@ -55,13 +55,13 @@ func TestSearchContract(t *testing.T) {
 	if len(result.Items) != 1 || result.Items[0].TraceID != "b" || result.Items[0].Status != "degraded" || result.Meta.Matched != 2 || !result.Meta.More {
 		t.Fatal(w.Body.String())
 	}
-	if p.query.Limit != 200 || p.query.Start != 1000000 {
+	if p.query.Limit != 200 || p.query.Start != 1000000 || p.query.MinDurationMs != 100 {
 		t.Fatal(p.query)
 	}
 	if strings.Contains(w.Body.String(), "children") || !strings.Contains(w.Body.String(), "candidate warning") {
 		t.Fatal(w.Body.String())
 	}
-	for _, query := range []string{"", "service=app&status=error", "service=app&sort=oops", "service=app&min_duration_ms=NaN", "service=app&min_duration_ms=-1"} {
+	for _, query := range []string{"", "service=app&status=error", "service=app&sort=oops", "service=app&min_duration_ms=NaN", "service=app&min_duration_ms=-1", "service=app&min_duration_ms=1e30"} {
 		w = httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest("GET", "/traces/search?"+query, nil))
 		if w.Code != 400 {

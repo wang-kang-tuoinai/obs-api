@@ -48,8 +48,8 @@ func (h *TraceHandler) Stats(c *gin.Context) {
 	result, resultNotices := tracestore.Aggregate(traces)
 	notices = append(notices, resultNotices...)
 
-	c.JSON(http.StatusOK, gin.H{
-		"stats":   result,
-		"notices": notices,
+	c.JSON(http.StatusOK, TraceStatsResponse{
+		Stats:   result,
+		Notices: notices,
 	})
 }

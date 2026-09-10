@@ -30,11 +30,12 @@ func NewJaegerProvider(baseURL string) *JaegerProvider {
 // TraceQuery 是 FindTraces 的查询参数。
 // Start/End 单位为毫秒（ms），内部会转换成 Jaeger 所需的微秒（µs）。
 type TraceQuery struct {
-	Service   string // 必填，Jaeger 强制要求
-	Operation string // 可选，过滤具体操作名
-	Start     int64  // 可选，时间范围起点（ms）
-	End       int64  // 可选，时间范围终点（ms）
-	Limit     int    // 可选，最多返回条数，合法范围 1-500，默认 200
+	MinDurationMs float64 // 可选，候选 Span 耗时下限（ms），0 不传；根耗时仍需本地校验
+	Service       string  // 必填，Jaeger 强制要求
+	Operation     string  // 可选，过滤具体操作名
+	Start         int64   // 可选，时间范围起点（ms）
+	End           int64   // 可选，时间范围终点（ms）
+	Limit         int     // 可选，最多返回条数，合法范围 1-500，默认 200
 }
 
 // TODO每个span里的error记录exception.type:exception.message,现在只记录了exception.message
@@ -78,6 +79,9 @@ func (p *JaegerProvider) FindTraces(ctx context.Context, q TraceQuery) ([]*Trace
 func (p *JaegerProvider) buildQueryURL(q TraceQuery) string {
 	params := url.Values{}
 	params.Set("service", q.Service)
+	if q.MinDurationMs > 0 {
+		params.Set("minDuration", strconv.FormatFloat(q.MinDurationMs, 'f', -1, 64)+"ms")
+	}
 	if q.Operation != "" {
 		params.Set("operation", q.Operation)
 	}
