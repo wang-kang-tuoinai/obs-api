@@ -266,6 +266,7 @@ func toSpan(js jaegerSpan, processes map[string]jaegerProcess) *Span {
 		Operation:    js.OperationName,
 		Kind:         kind,
 		StartMs:      js.StartTime / 1000,
+		StartUs:      js.StartTime,
 		DurationMs:   float64(js.Duration) / 1000,
 		Status:       status,
 		StatusDesc:   desc,

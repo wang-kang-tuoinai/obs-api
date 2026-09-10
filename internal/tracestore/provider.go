@@ -1,6 +1,7 @@
 package tracestore
 
 import "context"
+
 type Span struct {
 	TraceID      string         `json:"trace_id,omitempty"`
 	SpanID       string         `json:"span_id"`
@@ -9,6 +10,7 @@ type Span struct {
 	Operation    string         `json:"operation"`
 	Kind         string         `json:"kind"`
 	StartMs      int64          `json:"start_ms"`
+	StartUs      int64          `json:"-"` // 内部保留 Jaeger 微秒精度；旧数据回退到 StartMs
 	DurationMs   float64        `json:"duration_ms"`
 	SelfMs       float64        `json:"self_ms"`
 	Status       string         `json:"status"`
@@ -29,8 +31,6 @@ type Trace struct {
 	Root          *Span    `json:"root,omitempty"`
 	Warnings      []string `json:"warnings,omitempty"`
 }
-
-
 
 type TraceProvider interface {
 	GetTrace(ctx context.Context, traceID string) (*Trace, error)

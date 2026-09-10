@@ -3,6 +3,7 @@ package tracestore
 import (
 	"fmt"
 	"math"
+	"sort"
 )
 
 // ErrNotEntrypoint 表示该 Trace 的根 span 不是服务入口（Kind != "server"）。
@@ -47,21 +48,42 @@ func BuildTrace(traceID string, spans []*Span) (*Trace, error) {
 	return t, nil
 }
 
-// computeSelfMs 递归计算每个 span 的自身耗时（DurationMs 减去所有直接子节点之和）。
-// 子 span 并发时加总可能超过父 span 总耗时，兜底为 0 避免负数误导 Agent。
+// spanStartUs 保留源时间精度，兼容仅设置 StartMs 的调用方。
+func spanStartUs(s *Span) int64 {
+	if s.StartUs != 0 {
+		return s.StartUs
+	}
+	return s.StartMs * 1000
+}
+
+// computeSelfMs 扣除直接子节点在父时间范围内的区间并集。
+// 未覆盖时间可能包含未埋点等待，并非 CPU 时间。
 func computeSelfMs(s *Span) {
 	if s == nil {
 		return
 	}
-	var childSum float64
+	type interval struct{ start, end float64 }
+	intervals := make([]interval, 0, len(s.Children))
 	for _, c := range s.Children {
+		if c == nil {
+			continue
+		}
 		computeSelfMs(c)
-		childSum += c.DurationMs
+		offset := float64(spanStartUs(c)-spanStartUs(s)) / 1000
+		start, end := math.Max(0, offset), math.Min(s.DurationMs, offset+c.DurationMs)
+		if end > start {
+			intervals = append(intervals, interval{start, end})
+		}
 	}
-	s.SelfMs = math.Round((s.DurationMs-childSum)*1000) / 1000
-	if s.SelfMs < 0 {
-		s.SelfMs = 0 // 并发子 span 可能导致负数
+	sort.Slice(intervals, func(i, j int) bool { return intervals[i].start < intervals[j].start })
+	var covered, right float64
+	for _, v := range intervals {
+		if v.end > right {
+			covered += v.end - math.Max(right, v.start)
+			right = v.end
+		}
 	}
+	s.SelfMs = math.Round(math.Max(0, s.DurationMs-covered)*1000) / 1000
 }
 
 // classifyStatus 根据根节点及其后代判断整条链路的状态。
