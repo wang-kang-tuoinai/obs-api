@@ -3,7 +3,6 @@ package tracestore
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -30,7 +29,7 @@ func NewJaegerProvider(baseURL string) *JaegerProvider {
 // TraceQuery 是 FindTraces 的查询参数。
 // Start/End 单位为毫秒（ms），内部会转换成 Jaeger 所需的微秒（µs）。
 type TraceQuery struct {
-	MinDurationMs float64 // 可选，候选 Span 耗时下限（ms），0 不传；根耗时仍需本地校验
+	MinDurationMs float64 // 可选，候选 Span 耗时下限（ms），0 不传；目标入口耗时仍需本地校验
 	Service       string  // 必填，Jaeger 强制要求
 	Operation     string  // 可选，过滤具体操作名
 	Start         int64   // 可选，时间范围起点（ms）
@@ -62,14 +61,14 @@ func (p *JaegerProvider) FindTraces(ctx context.Context, q TraceQuery) ([]*Trace
 		return nil, nil, err
 	}
 	notices := r.Notices
-	// 返回条数达到上限时，说明更早的数据可能被截断，提示调用方分段查询
-	if r.RawCount >= q.Limit && r.EarliestMs != math.MaxInt64 {
+	limit := q.Limit
+	if limit < 1 || limit > 500 {
+		limit = 200
+	}
+	// 多服务 Span 的起始时间不同，不能根据最早返回 Span 宣称某段窗口完整覆盖。
+	if r.RawCount >= limit {
 		notices = append(notices, fmt.Sprintf(
-			"返回条数达到上限 %d，实际只覆盖 %s 之后的请求（请求窗口起点是 %s），"+
-				"更早的时间段需要分段查询",
-			q.Limit,
-			time.UnixMilli(r.EarliestMs).Format("15:04:05"),
-			time.Unix(q.Start/1000, 0).Format("15:04:05")))
+			"Jaeger 原始候选达到上限 %d，可能未覆盖整个时间窗口；建议缩小窗口分段查询，不能保证全窗口统计或最慢 Top N", limit))
 	}
 	return r.Traces, notices, nil
 }
@@ -151,7 +150,7 @@ func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string)
 
 	// 3. 逐条归一化 Span + BuildTrace
 	traces := make([]*Trace, 0, rawCount)
-	var skippedNonEntry, skippedBroken int
+	var skippedBroken int
 	for _, jt := range jr.Data {
 		spans := make([]*Span, 0, len(jt.Spans))
 		for _, js := range jt.Spans {
@@ -159,8 +158,6 @@ func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string)
 		}
 		t, err := BuildTrace(jt.TraceID, spans)
 		switch {
-		case errors.Is(err, ErrNotEntrypoint):
-			skippedNonEntry++
 		case err != nil:
 			skippedBroken++
 			log.Printf("build trace %s failed: %v", jt.TraceID, err)
@@ -170,10 +167,6 @@ func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string)
 	}
 
 	var notices []string
-	if skippedNonEntry > 0 {
-		notices = append(notices, fmt.Sprintf(
-			"跳过 %d 条非 HTTP 入口的 trace（如连接池拨号）", skippedNonEntry))
-	}
 	if skippedBroken > 0 {
 		notices = append(notices, fmt.Sprintf(
 			"有 %d 条 trace 结构异常无法解析，可能是数据不完整", skippedBroken))

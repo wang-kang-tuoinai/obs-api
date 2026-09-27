@@ -15,11 +15,14 @@ type SearchOptions struct {
 }
 
 type ErrorSummary struct {
+	Service   string `json:"service"`
+	SpanID    string `json:"span_id"`
 	Operation string `json:"operation"`
 	Message   string `json:"message"`
 }
 
 type TraceSummary struct {
+	EntrySpanID  string        `json:"entry_span_id"`
 	TraceID      string        `json:"trace_id"`
 	Service      string        `json:"service"`
 	Operation    string        `json:"operation"`
@@ -38,50 +41,60 @@ type SearchResult struct {
 
 // Search 在已获取候选内筛选、排序并生成摘要，不请求数据源、不修改输入切片。
 func Search(traces []*Trace, q SearchOptions) *SearchResult {
-	matches := make([]*Trace, 0)
+	matches := make([]TraceSummary, 0)
+	seen := map[[2]string]bool{}
 	for _, t := range traces {
-		if t == nil || t.Root == nil {
+		if t == nil {
 			continue
 		}
-		// TODO 现在是单体服务，根据t.Root.Service != q.Service判断没问题，
-		// 如果是多服务，根 Span 所属服务不一定是查询指定的服务，后续需明确下游入口语义。
-		// Jaeger may match any span; enforce the public root-entrypoint contract here.
-		if t.Root.Service != q.Service || (q.Operation != "" && t.RootOperation != q.Operation) || t.Root.StartMs < q.StartMs || t.Root.StartMs > q.EndMs {
-			continue
+		var visit func(*Span)
+		visit = func(s *Span) {
+			if s.Kind == "server" && matchesEntry(s, q) && s.DurationMs >= q.MinDurationMs {
+				status := classifyStatus(s)
+				key := [2]string{t.TraceID, s.SpanID}
+				if (q.Status == "" || q.Status == status) && !seen[key] {
+					seen[key] = true
+					item := TraceSummary{TraceID: t.TraceID, EntrySpanID: s.SpanID, Service: s.Service,
+						Operation: s.Operation, StartMs: s.StartMs, DurationMs: s.DurationMs,
+						Status: status, Warnings: append([]string(nil), t.Warnings...)}
+					if origin := findErrorOrigin(s); origin != nil {
+						item.ErrorSummary = &ErrorSummary{Service: origin.Service, SpanID: origin.SpanID,
+							Operation: shortTraceText(origin.Operation), Message: shortTraceText(firstNonEmpty(origin.Error, origin.StatusDesc))}
+					}
+					matches = append(matches, item)
+				}
+			}
+			for _, child := range s.Children {
+				visit(child)
+			}
 		}
-		if (q.Status != "" && t.Status != q.Status) || t.DurationMs < q.MinDurationMs {
-			continue
+		for _, root := range traceRoots(t) {
+			visit(root)
 		}
-		matches = append(matches, t)
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		a, b := matches[i], matches[j]
 		if q.Sort == "duration_desc" && a.DurationMs != b.DurationMs {
 			return a.DurationMs > b.DurationMs
 		}
-		if a.Root.StartMs != b.Root.StartMs {
-			return a.Root.StartMs > b.Root.StartMs
+		if a.StartMs != b.StartMs {
+			return a.StartMs > b.StartMs
 		}
-		return a.TraceID < b.TraceID
+		if a.TraceID != b.TraceID {
+			return a.TraceID < b.TraceID
+		}
+		return a.EntrySpanID < b.EntrySpanID
 	})
 	matched := len(matches)
 	if len(matches) > q.Limit {
 		matches = matches[:q.Limit]
 	}
 
-	items := make([]TraceSummary, 0, len(matches))
-	for _, t := range matches {
-		item := TraceSummary{
-			TraceID: t.TraceID, Service: t.Root.Service, Operation: t.RootOperation,
-			StartMs: t.Root.StartMs, DurationMs: t.DurationMs, Status: t.Status,
-			Warnings: t.Warnings,
-		}
-		if t.ErrorOrigin != "" {
-			item.ErrorSummary = &ErrorSummary{Operation: shortTraceText(t.ErrorOrigin), Message: shortTraceText(t.ErrorDesc)}
-		}
-		items = append(items, item)
-	}
-	return &SearchResult{Items: items, MatchedCount: matched, HasMoreMatches: matched > len(items)}
+	return &SearchResult{Items: matches, MatchedCount: matched, HasMoreMatches: matched > len(matches)}
+}
+
+func matchesEntry(s *Span, q SearchOptions) bool {
+	return s.Service == q.Service && (q.Operation == "" || s.Operation == q.Operation) && s.StartMs >= q.StartMs && s.StartMs <= q.EndMs
 }
 
 func shortTraceText(s string) string {

@@ -61,6 +61,7 @@ func (h *TraceHandler) Search(c *gin.Context) {
 	}
 	notices = append(notices, fetchedNotices...)
 	notices = append(notices, "仅在本次 Jaeger 返回且成功解析的候选中筛选和排序；空结果不代表整个时间窗口无异常，排序不保证全窗口最慢")
+	notices = append(notices, "每项为指定服务的一次 server 入口调用，以 trace_id + entry_span_id 标识；状态/耗时/错误摘要仅观察该入口及后代。fetched_count 是 Trace 数，matched_count/returned_count 是入口调用数。同一 Trace 可出现多项。")
 	result := tracestore.Search(traces, tracestore.SearchOptions{
 		Service: service, Operation: operation, StartMs: start * 1000, EndMs: end * 1000,
 		Status: status, MinDurationMs: minimum, Sort: order, Limit: limit,

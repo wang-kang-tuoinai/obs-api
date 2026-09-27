@@ -4,6 +4,7 @@ import "obs-api/internal/tracestore"
 
 // TraceStatsResponse 是统计接口的成功响应。
 type TraceStatsResponse struct {
+	Service string                  `json:"service"`
 	Stats   *tracestore.StatsResult `json:"stats"`
 	Notices []string                `json:"notices"`
 }

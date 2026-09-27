@@ -6,10 +6,6 @@ import (
 	"sort"
 )
 
-// ErrNotEntrypoint 表示该 Trace 的根 span 不是服务入口（Kind != "server"）。
-// 常见于连接池拨号、内部定时任务等非 HTTP 链路。
-var ErrNotEntrypoint = fmt.Errorf("root span is not a server entrypoint")
-
 // BuildTrace 从扁平的 span 列表组装成带树结构和分析结果的 Trace。
 // 输入必须是已归一化的 span（jaeger.go 负责），本函数与数据源无关。
 func BuildTrace(traceID string, spans []*Span) (*Trace, error) {
@@ -17,33 +13,33 @@ func BuildTrace(traceID string, spans []*Span) (*Trace, error) {
 		return nil, fmt.Errorf("trace %s: no spans", traceID)
 	}
 
-	root, orphans := buildTree(spans)
-	if root == nil {
-		return nil, fmt.Errorf("trace %s: no root span found", traceID)
+	nodes, roots, root, orphans, err := buildForest(spans)
+	if err != nil {
+		return nil, fmt.Errorf("trace %s: %w", traceID, err)
 	}
-	if root.Kind != "server" {
-		return nil, ErrNotEntrypoint
+	for _, r := range roots {
+		markExpectedDuplicates(r, "")
+		computeSelfMs(r)
 	}
-
-	computeSelfMs(root)
-	status := classifyStatus(root)
-	origin := findErrorOrigin(root)
-
-	t := &Trace{
-		TraceID:       traceID,
-		RootOperation: root.Operation,
-		DurationMs:    root.DurationMs,
-		Status:        status,
-		SpanCount:     len(spans),
-		Root:          root,
-	}
-	if origin != nil {
-		t.ErrorOrigin = origin.Operation
-		t.ErrorDesc = firstNonEmpty(origin.Error, origin.StatusDesc)
+	t := &Trace{TraceID: traceID, SpanCount: len(nodes), Root: root, Roots: roots,
+		Spans: nodes, Status: "unknown", Incomplete: root == nil || orphans > 0}
+	if root != nil {
+		t.RootOperation, t.DurationMs, t.Status = root.Operation, root.DurationMs, classifyStatus(root)
+		if origin := findErrorOrigin(root); origin != nil {
+			t.ErrorOrigin, t.ErrorDesc = origin.Operation, firstNonEmpty(origin.Error, origin.StatusDesc)
+		}
+	} else {
+		t.Warnings = append(t.Warnings, "无法确定唯一全局根入口；保留独立片段，顶层状态为 unknown，不纳入根入口统计")
 	}
 	if orphans > 0 {
 		t.Warnings = append(t.Warnings,
-			fmt.Sprintf("%d 个 span 的父节点不在本次返回中，已从树中丢弃", orphans))
+			fmt.Sprintf("%d 个 Span 缺少父节点，已保留为独立片段；分类仅基于已采集节点", orphans))
+	}
+	for _, s := range nodes {
+		if s.Service == "" {
+			t.Warnings = append(t.Warnings, "部分 Span 缺少 service，无法完整归属下游错误；不根据操作名或错误文本猜测服务")
+			break
+		}
 	}
 	return t, nil
 }
@@ -86,23 +82,13 @@ func computeSelfMs(s *Span) {
 	s.SelfMs = math.Round(math.Max(0, s.DurationMs-covered)*1000) / 1000
 }
 
-// classifyStatus 根据根节点及其后代判断整条链路的状态。
-// failed：根节点本身出错；degraded：后代有错但根正常；ok：无错。
-//
-// HTTP 状态码过滤规则（优先于 span status）：
-//   - 4xx (400-499)：由于4xx说明错误已经被服务处理，并且可以避免mysql中间件对正常的键重复记error
-//   - 5xx 或其他非 4xx：继续走常规的 isErrorSpan / hasErrorDescendant 判断。
-//
-// isErrorSpan 判断单个 span 是否出错：Status 标记为 error，或从 logs 提取到了异常消息。
+// isErrorSpan 是统计、分类和摘要共用的有效错误判定；原始 Span 仍完整保留。
 func isErrorSpan(s *Span) bool {
-	return s.Status == "error" || s.Error != ""
+	return s != nil && (httpStatus(s) >= 500 || (s.ExpectedError == "" && (s.Status == "error" || s.Error != "")))
 }
 
+// classifyStatus 只观察选中入口及后代；4xx 不再提前返回 ok。
 func classifyStatus(root *Span) string {
-	// HTTP 4xx：客户端侧错误，不视为服务端 failed/degraded。
-	if code, ok := root.Attrs["http.response.status_code"].(float64); ok && code >= 400 && code < 500 {
-		return "ok"
-	}
 	if isErrorSpan(root) {
 		return "failed"
 	}

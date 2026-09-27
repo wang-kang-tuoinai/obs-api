@@ -1,52 +1,45 @@
-# Trace 请求摘要检索
+# Trace 服务入口调用检索
 
-`GET /api/v1/traces/search`
+`GET /api/v1/traces/search`；Agent 工具 `search_traces`。
 
-用于在 stats 定位入口后，查找具体慢请求、失败请求或内部异常请求。每项代表一次请求，不返回完整 Span 树。
-
-## 字段口径
-
-- `operation`：根 Span 的入口 operation，精确匹配，例如 `GET /api/v1/users`；动态路由使用实际埋点名称（例如 `GET /api/v1/users/:id`），建议复制 stats.entrypoints 的值。不传表示所有根入口，不支持查询 Redis/MySQL 子操作。
-- `service`：根 Span 所属服务。当前实现只保留根节点为 server 的 Trace，不会把下游服务的子 Span 重新当成根入口。
-- `duration_ms`：根 Span 的总耗时，包含其内部调用等待，不是各 Span 耗时之和，也不是浏览器端耗时。
-- `status`：整条已解析链路的分类，并非根 Span 的原始状态。沿用 stats 当前实现：根 HTTP 4xx 优先归为 ok；其余情况下根 Span 标记 error 或有异常消息为 failed；根未出错但后代出错为 degraded；否则 ok。慢请求可以是 ok，degraded 不一定变慢，也不证明执行了业务降级逻辑。
+每项代表指定服务的一次 `kind=server` 入口调用，以 `(trace_id, entry_span_id)` 标识，不要求是整条 Trace 的根。只返回摘要，不返回 Span 树。
 
 ## 请求参数
 
-| 参数 | 必填 | 默认值与约束 |
-|---|---|---|
-| service | 是 | 根入口服务，例如 ops-agent-backend；空值返回 400 |
-| operation | 否 | 根入口名称，精确匹配 |
-| start / end | 否 | 秒级 Unix 时间戳；复用 stats 时间规则，默认最近 1 小时，最大 7 天；调整写入 notices |
-| status | 否 | ok / degraded / failed；不传表示全部，其他值返回 400 |
-| min_duration_ms | 否 | 根耗时下限，包含等号；默认 0；支持小数；负数、NaN、无穷或无法解析返回 400 |
-| sort | 否 | duration_desc（默认）或 start_desc；其他值返回 400 |
-| limit | 否 | 最终摘要数量，默认 10，范围 1–50；非法值恢复默认并提示 |
-| fetch_limit | 否 | Jaeger 候选获取上限，默认 200，范围 1–500；非法值恢复默认并提示 |
+| 参数 | 含义与约束 |
+| --- | --- |
+| service | 必填，目标入口自己的服务名，精确匹配 |
+| operation | 可选，目标服务自己的 HTTP/RPC 入口名；如 GET /api/v1/users/:id；不是上游接口、Redis GET 或 MySQL SELECT |
+| start/end | 目标入口开始时间的范围，秒级 Unix 时间戳；默认最近一小时，最长七天 |
+| status | 可选，目标入口及后代的 ok/degraded/failed 分类 |
+| min_duration_ms | 目标入口耗时下限，含等号；默认 0，有限非负数，不能超过 Go time.Duration 范围 |
+| sort | duration_desc（默认）或 start_desc |
+| limit | 最终入口调用数，默认 10，范围 1–50 |
+| fetch_limit | Jaeger 候选 Trace 上限，默认 200，范围 1–500 |
 
-duration_desc 按根耗时降序，同耗时按开始时间降序，仍相同按 trace_id 升序。start_desc 按开始时间降序，同时间按 trace_id 升序。
+非法 service/status/sort/min_duration_ms 返回 400；非法 limit/fetch_limit 恢复默认并提示。时间调整规则与 stats 一致。
 
-## 示例
+duration_desc 按入口耗时降序，再按开始时间降序；start_desc 按开始时间降序。其余相同时按 trace_id、entry_span_id 升序，保证稳定。重复的候选调用不会重复输出。
 
-```http
-GET /api/v1/traces/search?service=ops-agent-backend&operation=GET%20%2Fapi%2Fv1%2Fusers&status=degraded&min_duration_ms=100&sort=duration_desc&limit=10
-```
-
-以下为示意数据：
+## 响应示例
 
 ```json
 {
-  "items": [
-    {
-      "trace_id": "a1b2c3",
-      "service": "ops-agent-backend",
-      "operation": "GET /api/v1/users",
-      "start_ms": 1787003500000,
-      "duration_ms": 320.5,
-      "status": "degraded",
-      "error_summary": {"operation": "redis GET", "message": "connection refused"}
+  "items": [{
+    "trace_id": "a1b2c3",
+    "entry_span_id": "user-entry-1",
+    "service": "user-service",
+    "operation": "GET /api/v1/users/:id",
+    "start_ms": 1787003500000,
+    "duration_ms": 350,
+    "status": "degraded",
+    "error_summary": {
+      "service": "profile-service",
+      "span_id": "profile-db-1",
+      "operation": "SELECT profiles",
+      "message": "i/o timeout"
     }
-  ],
+  }],
   "meta": {
     "window": {"start": 1787000000, "end": 1787003600},
     "fetch_limit": 200,
@@ -55,38 +48,32 @@ GET /api/v1/traces/search?service=ops-agent-backend&operation=GET%20%2Fapi%2Fv1%
     "returned_count": 1,
     "has_more_matches": false
   },
-  "notices": ["仅在本次 Jaeger 返回且成功解析的候选中筛选和排序；空结果不代表整个时间窗口无异常，排序不保证全窗口最慢"]
+  "notices": []
 }
 ```
 
-## 返回字段
+以上 ID 和数值仅为示意。operation 不传时匹配该服务全部 server 入口。一个 Trace 两次调用该服务可返回两行。
 
-| 字段 | 含义 |
-|---|---|
-| items[].trace_id | 请求链路 ID，可用于现有 `/traces/:trace_id` 或 `/logs/search?trace_id=...` 下钻 |
-| items[].service / operation | 根 Span 所属服务与入口 |
-| items[].start_ms | 根 Span 开始时间，毫秒级 Unix 时间戳；注意请求 start/end 使用秒 |
-| items[].duration_ms | 根 Span 耗时，毫秒 |
-| items[].status | 上述链路分类 |
-| items[].error_summary | 可选，现有分析器选出的一条代表性错误；operation/message 各截断至 240 个 Unicode 字符并追加省略号；不是已验证根因，也不是全部异常 |
-| items[].warnings | 可选，链路结构不完整等警告；状态仅基于解析成功的树 |
-| meta.window | 实际采用的查询时间范围，秒 |
-| meta.fetched_count | Jaeger 返回后成功解析的候选数，已排除非入口/无法解析链路；不是全窗口总请求数 |
-| meta.matched_count | 候选内通过根入口、时间、状态和耗时筛选的条数，尚未应用 limit |
-| meta.returned_count | 实际返回摘要数 |
-| meta.has_more_matches | 本次候选中是否还有匹配结果因 limit 被省略；不是 Jaeger 分页标志 |
-| notices | 时间或数量参数调整、候选截断、跳过数据及结果范围提示 |
+## 分析与计数口径
 
-## 查询边界和错误
+- service、operation、start_ms、duration_ms 均来自选中的入口。耗时包含其执行期间等待下游的时间，不叠加下游耗时。
+- status 和 error_summary 只分析目标入口及其后代，不受上游和兄弟分支错误影响。分类及重复键排除规则见 [stats 文档](traces-stats.md)。4xx 不再直接判 ok。
+- error_summary 按子节点开始时间排序，以先后代后自身的深度优先顺序取第一个有效错误。所有字段来自同一个错误节点；不是最早错误、全部错误或已确认根因。operation/message 各最多保留 240 个 Unicode 字符后追加省略号。无有效错误时省略摘要。
+- 错误节点的 service 是记录错误的服务，不是推测的故障依赖。例如应用记录的数据库调用错误，归属于该应用服务。
+- fetched_count 是成功解析的候选 Trace 数；matched_count 是候选内符合条件的入口调用数，returned_count 是应用 limit 后返回的调用数。matched_count 可以大于 fetched_count。
+- has_more_matches 只表示本批候选中有匹配调用被 limit 省略，不是 Jaeger 分页标志。
+- warnings 提示链路不完整、缺失服务名等情况。上游缺失时仍可以检索已采集的下游入口，但不能把局部 ok 当作完整链路无异常。
 
-先按服务、operation、时间及耗时下限从 Jaeger 获取最多 fetch_limit 条候选，再校验根入口并在本地按状态和根耗时筛选、排序，最后取 limit 条。两个 limit 独立；fetch_limit 小于 limit 时不会自动扩大候选范围。
+## 候选查询与下钻
 
-对外 min_duration_ms 保持毫秒数值；大于 0 时转换为 Jaeger 的 minDuration 参数，例如 100.5 → minDuration=100.5ms；不传或为 0 时省略该参数。超过 Go time.Duration 可表示范围的值返回 400。Jaeger 筛选候选 Span，本地仍校验根 Span 耗时，避免异步子操作等情况误入结果。meta.fetched_count 因此是上游耗时过滤后成功解析的候选数；Stats 未设置耗时下限，不受影响。
+Jaeger 按 service、operation、时间和 minDuration 获取候选，随后在本地枚举目标服务的 server 入口，再按同一入口的时间、耗时和状态验证。min_duration_ms 大于 0 时转为例如 minDuration=100.5ms；0 时不传。
 
-该接口不提供游标分页，不保证全窗口扫描，也不承诺全窗口最慢 Top N。达到候选上限时应缩小时间窗口分段查询；提高 limit 只会增加输出，不会增加候选。即使 items 为空，也可能是候选内没有匹配项，不能据此断言系统无故障。原始候选截断提示沿用 provider 的 notices。
+只对本批候选排序，不承诺全窗口最慢 Top N，也不提供游标分页。两个 limit 独立，增加最终 limit 不会增加候选召回范围；空结果不能证明整个窗口无异常。
 
-- 200：查询完成，无匹配时 items 为 []。
-- 400：必填参数缺失或 status/sort/min_duration_ms 非法，返回 `{"error":"说明"}`。
-- 502：Jaeger 请求或解析失败，返回 `{"error":"说明"}`。
+调用 detail(trace_id) 后，用 entry_span_id 在 root 或 fragments 中定位入口。detail 的顶层耗时/状态仍是全局根视角，可以与本摘要不同。
 
-Agent 工具名：`search_traces`，已注册在诊断 Agent 的工具列表中。宽泛问题先查 stats；已知接口时可直接 search；已知 trace_id 时直接查询详情或关联日志。
+由 stats 的下游服务名发起 search 时，不要将上游 operation 当作下游 operation。该服务查询可能包含其他上游的请求，仍需 trace_id 关联。缺少 server 埋点的服务可能无法搜索到入口，不能据此否定已有错误 Span。
+
+- 200：查询完成；无匹配时 items 为 []。
+- 400：参数非法，返回 error 说明。
+- 502：Jaeger 请求或解析失败。

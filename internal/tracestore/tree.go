@@ -1,44 +1,98 @@
 package tracestore
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+)
 
-// buildTree 把扁平 span 列表挂成树，返回根节点和孤儿数量。
-// 根判定双判据：ParentSpanID 为空，且优先选 Kind == "server" 的节点。
-func buildTree(spans []*Span) (root *Span, orphans int) {
-	byID := make(map[string]*Span, len(spans))
-	for _, s := range spans {
-		byID[s.SpanID] = s
+// buildForest 保留所有可用片段，不将缺失父节点的 Span 冒充全局根。
+// 复制节点后建树，重复分析不会重复挂载 Children，也不改写输入。
+func buildForest(input []*Span) (spans, roots []*Span, root *Span, orphans int, err error) {
+	byID := make(map[string]*Span, len(input))
+	for _, s := range input {
+		if s == nil || s.SpanID == "" {
+			return nil, nil, nil, 0, fmt.Errorf("empty span or span_id")
+		}
+		if byID[s.SpanID] != nil {
+			return nil, nil, nil, 0, fmt.Errorf("duplicate span_id %s", s.SpanID)
+		}
+		n := *s
+		n.Children, n.ExpectedError = nil, ""
+		byID[n.SpanID] = &n
+		spans = append(spans, &n)
 	}
-
+	// 先校验父链，避免环导致后续递归无法结束。
+	state := map[string]int{}
+	var visit func(*Span) error
+	visit = func(s *Span) error {
+		if state[s.SpanID] == 1 {
+			return fmt.Errorf("cycle at span %s", s.SpanID)
+		}
+		if state[s.SpanID] == 2 {
+			return nil
+		}
+		state[s.SpanID] = 1
+		if p := byID[s.ParentSpanID]; p != nil {
+			if err := visit(p); err != nil {
+				return err
+			}
+		}
+		state[s.SpanID] = 2
+		return nil
+	}
+	for _, s := range spans {
+		if err := visit(s); err != nil {
+			return nil, nil, nil, 0, err
+		}
+	}
+	rootCount := 0
 	for _, s := range spans {
 		if s.ParentSpanID == "" {
-			if root == nil || s.Kind == "server" {
-				root = s
-			}
-			continue
-		}
-		if p, ok := byID[s.ParentSpanID]; ok {
+			root, rootCount = s, rootCount+1
+			roots = append(roots, s)
+		} else if p := byID[s.ParentSpanID]; p != nil {
 			p.Children = append(p.Children, s)
 		} else {
-			// 父 span 不在这批数据里（trace 被截断），当作孤儿丢弃
 			orphans++
+			roots = append(roots, s)
 		}
 	}
-
-	// 按 StartMs 排序，让 Agent 看到的顺序和时间轴一致
-	sortChildren(root)
-	return root, orphans
+	if rootCount != 1 {
+		root = nil
+	}
+	sortSpans(spans)
+	sortSpans(roots)
+	for _, r := range roots {
+		sortChildren(r)
+	}
+	return spans, roots, root, orphans, nil
 }
 
-// sortChildren 递归地按 StartMs 对每层 Children 排序。
+func sortSpans(spans []*Span) {
+	sort.Slice(spans, func(i, j int) bool {
+		if spanStartUs(spans[i]) != spanStartUs(spans[j]) {
+			return spanStartUs(spans[i]) < spanStartUs(spans[j])
+		}
+		return spans[i].SpanID < spans[j].SpanID
+	})
+}
+
 func sortChildren(s *Span) {
 	if s == nil {
 		return
 	}
-	sort.Slice(s.Children, func(i, j int) bool {
-		return s.Children[i].StartMs < s.Children[j].StartMs
-	})
+	sortSpans(s.Children)
 	for _, c := range s.Children {
 		sortChildren(c)
 	}
+}
+
+func traceRoots(t *Trace) []*Span {
+	if len(t.Roots) > 0 {
+		return t.Roots
+	}
+	if t.Root != nil {
+		return []*Span{t.Root}
+	}
+	return nil
 }
