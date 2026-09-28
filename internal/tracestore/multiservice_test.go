@@ -221,13 +221,13 @@ func TestJaegerMultiServiceNormalization(t *testing.T) {
 	}))
 	defer server.Close()
 	provider := NewJaegerProvider(server.URL)
-	_, notices, err := provider.FindTraces(context.Background(), TraceQuery{Service: "user", Limit: 1})
-	if err != nil || !strings.Contains(strings.Join(notices, " "), "候选达到上限") {
-		t.Fatalf("candidate cap not disclosed: %v %v", notices, err)
+	batch, err := provider.FindTraces(context.Background(), TraceQuery{Service: "user", Limit: 1})
+	if err != nil || batch.RawCount != 1 {
+		t.Fatalf("candidate count lost: %+v %v", batch, err)
 	}
-	_, notices, err = provider.FindTraces(context.Background(), TraceQuery{Service: "user"})
-	if err != nil || len(notices) != 0 {
-		t.Fatalf("default limit incorrectly reported as reached: %v %v", notices, err)
+	batch, err = provider.FindTraces(context.Background(), TraceQuery{Service: "user"})
+	if err != nil || len(batch.Notices) != 0 {
+		t.Fatalf("unexpected notices: %v %v", batch.Notices, err)
 	}
 	tr, err := provider.GetTrace(context.Background(), "t")
 	if err != nil || tr == nil {

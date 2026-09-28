@@ -9,11 +9,16 @@ import (
 )
 
 type TraceHandler struct {
-	provider tracestore.TraceProvider
+	provider     tracestore.TraceProvider
+	statsOptions tracestore.StatsOptions
 }
 
-func NewTraceHandler(provider tracestore.TraceProvider) *TraceHandler {
-	return &TraceHandler{provider: provider}
+func NewTraceHandler(provider tracestore.TraceProvider, options ...tracestore.StatsOptions) *TraceHandler {
+	statsOptions := tracestore.DefaultStatsOptions()
+	if len(options) > 0 {
+		statsOptions = options[0]
+	}
+	return &TraceHandler{provider: provider, statsOptions: statsOptions}
 }
 
 // GetTrace 查询指定 trace_id 的链路数据并返回。

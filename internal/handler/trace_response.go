@@ -11,9 +11,10 @@ type TraceStatsResponse struct {
 }
 
 type TraceStatsMeta struct {
-	Window        TraceWindow `json:"window"`
-	FetchLimit    int         `json:"fetch_limit"`
-	FetchedTraces int         `json:"fetched_traces"`
+	Window            TraceWindow                     `json:"window"`
+	PerOperationLimit int                             `json:"per_operation_limit"`
+	FetchedTraces     int                             `json:"fetched_traces"`
+	OperationQueries  []tracestore.OperationQueryMeta `json:"operation_queries"`
 }
 
 // TraceWindow 使用秒级 Unix 时间戳，与 HTTP 查询参数一致。

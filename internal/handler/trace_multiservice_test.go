@@ -3,6 +3,8 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -56,6 +58,50 @@ func TestMultiServiceHTTPContracts(t *testing.T) {
 	}
 }
 
+func TestStatsHTTPPartialAndTotalFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, allFailed := range []bool{false, true} {
+		t.Run(fmt.Sprint("allFailed=", allFailed), func(t *testing.T) {
+			jaeger := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.URL.Path == "/api/operations" {
+					fmt.Fprint(w, `{"data":[{"name":"a","spanKind":"server"},{"name":"b","spanKind":"server"}]}`)
+					return
+				}
+				if allFailed || req.URL.Query().Get("operation") == "b" {
+					w.WriteHeader(503)
+					return
+				}
+				if req.URL.Query().Get("limit") != "1500" {
+					t.Error(req.URL)
+				}
+				fmt.Fprint(w, `{"data":[]}`)
+			}))
+			defer jaeger.Close()
+			r := gin.New()
+			r.GET("/stats", NewTraceHandler(tracestore.NewJaegerProvider(jaeger.URL)).Stats)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest("GET", "/stats?service=user&start=1000&end=2000", nil))
+			wantCode := 200
+			if allFailed {
+				wantCode = 502
+			}
+			if w.Code != wantCode {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			var response TraceStatsResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Meta.OperationQueries) != 2 || response.Meta.OperationQueries[1].Status != tracestore.OperationFailed || response.Meta.OperationQueries[1].RawTraceCount != nil {
+				t.Fatal(w.Body.String())
+			}
+			if !allFailed && (*response.Meta.OperationQueries[0].RawTraceCount != 0 || response.Meta.OperationQueries[0].Status != tracestore.OperationSuccess) {
+				t.Fatal(w.Body.String())
+			}
+		})
+	}
+}
+
 func TestStatsCountsCallsAndReportsCandidateScope(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	a := &tracestore.Span{SpanID: "a", ParentSpanID: "missing", Service: "user", Kind: "server", Operation: "GET /users", StartMs: 1000000, DurationMs: 20}
@@ -72,15 +118,15 @@ func TestStatsCountsCallsAndReportsCandidateScope(t *testing.T) {
 		r.ServeHTTP(w, httptest.NewRequest("GET", "/stats?"+query, nil))
 		return w
 	}
-	w := get("service=user&operation=GET%20%2Fusers&start=1000&end=2000&limit=1")
+	w := get("service=user&operation=GET%20%2Fusers&start=1000&end=2000")
 	var result TraceStatsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if w.Code != 200 || result.Stats.TotalCalls != 2 || result.Meta.FetchedTraces != 1 || result.Meta.FetchLimit != 1 || result.Meta.Window.Start != 1000 || result.Meta.Window.End != 2000 {
+	if w.Code != 200 || result.Stats.TotalCalls != 2 || result.Meta.FetchedTraces != 1 || result.Meta.PerOperationLimit != 5000 || result.Meta.Window.Start != 1000 || result.Meta.Window.End != 2000 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	if p.query.Service != "user" || p.query.Operation != "GET /users" || p.query.Start != 1000000 || p.query.End != 2000000 || p.query.Limit != 1 {
+	if p.query.Service != "user" || p.query.Operation != "GET /users" || p.query.Start != 1000000 || p.query.End != 2000000 || p.query.Limit != 5000 {
 		t.Fatalf("wrong provider query: %+v", p.query)
 	}
 	if strings.Contains(w.Body.String(), "total_traces") || !strings.Contains(w.Body.String(), "candidate warning") || strings.Count(strings.Join(result.Notices, " "), "缺少父节点") != 1 {
@@ -91,6 +137,12 @@ func TestStatsCountsCallsAndReportsCandidateScope(t *testing.T) {
 	}
 	if w := get("service=%20%20"); w.Code != 400 {
 		t.Fatal(w.Code)
+	}
+	if w := get("service=user&limit=1500"); w.Code != 400 {
+		t.Fatal(w.Code)
+	}
+	if len(result.Meta.OperationQueries) != 1 || result.Meta.OperationQueries[0].Status != tracestore.OperationSuccess || *result.Meta.OperationQueries[0].RawTraceCount != 3 {
+		t.Fatalf("wrong query metadata: %+v", result.Meta)
 	}
 	p.err = errors.New("jaeger unavailable")
 	if w := get("service=user"); w.Code != 502 {

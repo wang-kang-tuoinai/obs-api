@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -34,7 +35,7 @@ type TraceQuery struct {
 	Operation     string  // 可选，过滤具体操作名
 	Start         int64   // 可选，时间范围起点（ms）
 	End           int64   // 可选，时间范围终点（ms）
-	Limit         int     // 可选，最多返回条数，合法范围 1-500，默认 200
+	Limit         int     // 内部候选上限 1-5000，默认 200；search HTTP 仍限制为 500。
 }
 
 // TODO每个span里的error记录exception.type:exception.message,现在只记录了exception.message
@@ -42,7 +43,7 @@ type TraceQuery struct {
 // TODOGetTrace现在有两层作用，供AI分析单个Trace的工具，作为其他工具的基础设施，所以对GetTrace返回给agent的工具需要过滤一下
 func (p *JaegerProvider) GetTrace(ctx context.Context, traceID string) (*Trace, error) {
 	rawURL := fmt.Sprintf("%s/api/traces/%s", p.baseURL, traceID)
-	r, err := p.fetchAndBuildTraces(ctx, rawURL)
+	r, err := p.fetchAndBuildTraces(ctx, rawURL, true)
 	if err != nil {
 		return nil, err
 	}
@@ -53,24 +54,61 @@ func (p *JaegerProvider) GetTrace(ctx context.Context, traceID string) (*Trace, 
 }
 
 // FindTraces 按条件从 Jaeger 拉取一批 Trace。
-// 返回值：成功解析的 Trace 列表、跳过原因的 notices、错误。
-func (p *JaegerProvider) FindTraces(ctx context.Context, q TraceQuery) ([]*Trace, []string, error) {
-	rawURL := p.buildQueryURL(q)
-	r, err := p.fetchAndBuildTraces(ctx, rawURL)
+// 原始候选数量交给 stats/search 生成各自适用的范围提示。
+func (p *JaegerProvider) FindTraces(ctx context.Context, q TraceQuery) (TraceBatch, error) {
+	return p.fetchAndBuildTraces(ctx, p.buildQueryURL(q), false)
+}
+
+// GetOperations 使用支持 spanKind 过滤的接口，避免把数据库/缓存操作当成入口。
+func (p *JaegerProvider) GetOperations(ctx context.Context, service string) ([]string, error) {
+	params := url.Values{"service": {service}, "spanKind": {"server"}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/api/operations?"+params.Encode(), nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	notices := r.Notices
-	limit := q.Limit
-	if limit < 1 || limit > 500 {
-		limit = 200
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("查询 Jaeger operations 失败: %w", err)
 	}
-	// 多服务 Span 的起始时间不同，不能根据最早返回 Span 宣称某段窗口完整覆盖。
-	if r.RawCount >= limit {
-		notices = append(notices, fmt.Sprintf(
-			"Jaeger 原始候选达到上限 %d，可能未覆盖整个时间窗口；建议缩小窗口分段查询，不能保证全窗口统计或最慢 Top N", limit))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("查询 Jaeger operations 返回状态码 %d", resp.StatusCode)
 	}
-	return r.Traces, notices, nil
+	var payload struct {
+		Data []struct {
+			Name     string `json:"name"`
+			SpanKind string `json:"spanKind"`
+		} `json:"data"`
+		Errors json.RawMessage `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("解析 Jaeger operations 失败: %w", err)
+	}
+	if hasJaegerErrors(payload.Errors) {
+		return nil, fmt.Errorf("Jaeger operations 返回查询错误")
+	}
+	seen := map[string]bool{}
+	operations := make([]string, 0)
+	for _, op := range payload.Data {
+		if op.SpanKind == "server" && strings.TrimSpace(op.Name) != "" && !seen[op.Name] {
+			seen[op.Name] = true
+			operations = append(operations, op.Name)
+		}
+	}
+	sort.Strings(operations)
+	return operations, nil
+}
+
+func hasJaegerErrors(raw json.RawMessage) bool {
+	s := strings.TrimSpace(string(raw))
+	return s != "" && s != "null" && s != "[]"
+}
+
+func normalizeTraceLimit(limit int) int {
+	if limit < 1 || limit > 5000 {
+		return 200
+	}
+	return limit
 }
 
 // buildQueryURL 将 TraceQuery 转成 Jaeger /api/traces 的查询 URL。
@@ -90,63 +128,45 @@ func (p *JaegerProvider) buildQueryURL(q TraceQuery) string {
 	if q.End > 0 {
 		params.Set("end", strconv.FormatInt(q.End*1000, 10)) // ms → µs
 	}
-	limit := q.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 200
-	}
+	limit := normalizeTraceLimit(q.Limit)
 	params.Set("limit", strconv.Itoa(limit))
 	return fmt.Sprintf("%s/api/traces?%s", p.baseURL, params.Encode())
 }
 
-// fetchResult 是 fetchAndBuildTraces 的返回结构，聚合多个返回值以便扩展。
-type fetchResult struct {
-	Traces     []*Trace // 成功解析的 Trace 列表
-	RawCount   int      // Jaeger 原始返回的 trace 数量（含被跳过的）
-	EarliestMs int64    // 所有原始 span 中最早的开始时间（ms），含被过滤掉的拨号 trace
-	Notices    []string // 跳过原因等提示
-}
-
 // fetchAndBuildTraces 是共用的底层方法：发 HTTP 请求 → 解析 jaegerResponse → 逐条 BuildTrace。
 // 适用于 GetTrace（/api/traces/{id}）和 FindTraces（/api/traces?...）两种 URL 形式。
-func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string) (fetchResult, error) {
+func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string, allowNotFound bool) (TraceBatch, error) {
 	// 1. 发 HTTP 请求
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return fetchResult{}, fmt.Errorf("构造请求失败: %w", err)
+		return TraceBatch{}, fmt.Errorf("构造请求失败: %w", err)
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return fetchResult{}, fmt.Errorf("请求 Jaeger 失败: %w", err)
+		return TraceBatch{}, fmt.Errorf("请求 Jaeger 失败: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
-		return fetchResult{}, nil // trace 不存在
+	if resp.StatusCode == http.StatusNotFound && allowNotFound {
+		return TraceBatch{}, nil // 仅详情接口的 404 表示 trace 不存在。
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fetchResult{}, fmt.Errorf("Jaeger 返回非 200 状态码: %d", resp.StatusCode)
+		return TraceBatch{}, fmt.Errorf("Jaeger 返回非 200 状态码: %d", resp.StatusCode)
 	}
 
 	// 2. 解析 jaegerResponse
 	var jr jaegerResponse
 	if err := json.NewDecoder(resp.Body).Decode(&jr); err != nil {
-		return fetchResult{}, fmt.Errorf("解析 Jaeger 响应失败: %w", err)
+		return TraceBatch{}, fmt.Errorf("解析 Jaeger 响应失败: %w", err)
+	}
+	if hasJaegerErrors(jr.Errors) {
+		return TraceBatch{}, fmt.Errorf("Jaeger 返回查询错误")
 	}
 	if len(jr.Data) == 0 {
-		return fetchResult{}, nil
+		return TraceBatch{}, nil
 	}
 
 	rawCount := len(jr.Data)
-
-	// 基于所有原始 span 算最早时间，包括拨号 trace（单位：µs → ms）
-	var earliestUs int64 = math.MaxInt64
-	for _, jt := range jr.Data {
-		for _, js := range jt.Spans {
-			if js.StartTime < earliestUs {
-				earliestUs = js.StartTime
-			}
-		}
-	}
 
 	// 3. 逐条归一化 Span + BuildTrace
 	traces := make([]*Trace, 0, rawCount)
@@ -171,11 +191,10 @@ func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string)
 		notices = append(notices, fmt.Sprintf(
 			"有 %d 条 trace 结构异常无法解析，可能是数据不完整", skippedBroken))
 	}
-	return fetchResult{
-		Traces:     traces,
-		RawCount:   rawCount,
-		EarliestMs: earliestUs / 1000, // µs → ms
-		Notices:    notices,
+	return TraceBatch{
+		Traces:   traces,
+		RawCount: rawCount,
+		Notices:  notices,
 	}, nil
 }
 

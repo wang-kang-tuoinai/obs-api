@@ -11,7 +11,20 @@
 | service | 必填，目标服务名，精确匹配；一次查询一个服务 |
 | operation | 可选，目标服务 server 入口操作名，精确匹配；留空统计所有匹配入口接口 |
 | start/end | 秒级 Unix 时间戳，筛选目标入口开始时间，包含两端；默认最近一小时，窗口最长七天 |
-| limit | Jaeger 候选 Trace 上限，默认 200，范围 1–500；非法值恢复默认并提示 |
+
+stats 已移除对外 limit 参数，传入（包括空值）返回 400；search 的 limit/fetch_limit 不变。
+
+## 按 operation 查询
+
+- 未指定 operation：查询 Jaeger `/api/operations?service=...&spanKind=server`，去重后按名称排序，每个 operation 最多拉取 1500 条候选 Trace。
+- 指定 operation：直接查询，不依赖 operation 目录；候选上限提高到 5000。
+- 每批仅统计该 operation 对应的服务入口，按 `(trace_id, entry_span_id)` 去重后统一聚合。不能把同一 Trace 中其他 operation 的入口混进该批。
+- operation 目录没有时间窗口筛选，历史操作在当前窗口没有数据是正常情况。空目录只表示未发现 server 操作，不证明业务正常。
+- 最多 3 路并发，目录与分批查询共用 25 秒预算；单次最多查询 30 个 operation，超出部分标 skipped。未启动的超时任务标 skipped，已启动但失败的任务标 failed。无需递归拆分时间窗口。
+
+预算是本项目配置，不是 Jaeger 固定最大值。obs-api 支持环境变量 `TRACE_STATS_PER_OPERATION_LIMIT`（默认 1500）、`TRACE_STATS_FOCUSED_LIMIT`（默认 5000），须满足 `1 <= 前者 < 后者 <= 5000`，非法配置启动失败。
+
+概览触顶时指定该 operation 使用更高预算重查；单接口仍触顶则缩小时间窗口。1500/5000 限制候选 Trace 数，不限制入口调用次数。
 
 Agent 可省略 service 使用 `TRACE_ENTRY_SERVICE`，默认 `ops-agent-backend`；HTTP API 仍要求 service。该配置表示默认查询的单个服务，不要求是全局根入口服务。多个服务应分别查询，不能把调用数相加当作用户请求数。本接口不增加 status、min_duration_ms、sort 筛选，按状态或耗时下钻请使用 search。
 
@@ -23,7 +36,19 @@ Agent 可省略 service 使用 `TRACE_ENTRY_SERVICE`，默认 `ops-agent-backend
 
 `by_status` 固定包含 ok/degraded/failed 三个计数，其和等于 total_calls。`entrypoints` 按 `(service, operation)` 聚合，分组 count 之和等于 total_calls，按 count 降序、service/operation 升序排列。
 
-`meta.window` 返回实际查询的 start/end（秒）；`meta.fetch_limit` 是实际候选上限；`meta.fetched_traces` 是 provider 成功解析后不同 trace_id 的数量，不是窗口全部 Trace 数。一个候选可包含多个入口，因此 total_calls 可以超过 fetched_traces，甚至超过 fetch_limit。
+`meta.window` 返回实际查询的 start/end（秒）；`meta.per_operation_limit` 取代 fetch_limit，返回本次每个 operation 的实际候选上限。`meta.fetched_traces` 是所有成功查询中成功解析后不同 trace_id 的数量，跨 operation 去重；不是原始数量之和，也不是窗口全部 Trace 数。一个候选可包含多个入口，因此 total_calls 可以超过 fetched_traces。
+
+`meta.operation_queries` 对每个发现或指定的 operation 返回：
+
+| 字段 | 含义 |
+| --- | --- |
+| operation | 查询的操作名 |
+| status | success / failed / skipped；success 表示查询成功，不保证候选无截断或采集完整 |
+| raw_trace_count | 成功时为 Jaeger 原始返回数量，包括无法解析的 Trace；成功无数据为 0；failed/skipped 为 null |
+| limit_reached | 仅 success 时判断原始候选是否达到上限；true 表示可能截断，false 不保证采集完整 |
+| message | 可选的触顶建议、查询错误或跳过原因 |
+
+单接口或所有操作查询失败/未执行时返回 502，并保留 operation_queries；发现目录失败返回 502 error。部分成功时返回 200，stats 只包含成功查询的有效入口，notices 明确标记不完整。结构异常而无法解析的记录会保留原始计数并在 notices 提示，不因解析后的数量变少就忽略触顶风险。
 
 无匹配入口时返回 200，total_calls 和状态计数均为 0，entrypoints 为 `[]`。以下为完整响应示例：
 
@@ -49,8 +74,14 @@ Agent 可省略 service 使用 `TRACE_ENTRY_SERVICE`，默认 `ops-agent-backend
   },
   "meta": {
     "window": {"start": 1789479485, "end": 1789479545},
-    "fetch_limit": 200,
-    "fetched_traces": 2
+    "per_operation_limit": 1500,
+    "fetched_traces": 2,
+    "operation_queries": [{
+      "operation": "GET /users/:id",
+      "status": "success",
+      "raw_trace_count": 2,
+      "limit_reached": false
+    }]
   },
   "notices": ["仅统计已召回的服务入口调用；样本较小，百分位仅供参考。"]
 }
@@ -78,4 +109,4 @@ Agent 可省略 service 使用 `TRACE_ENTRY_SERVICE`，默认 `ops-agent-backend
 
 缺少全局根不妨碍已识别服务入口的统计。无法连接到该入口的片段不能强行归入其后代；缺失后代可能低估错误。stats 不修改原 Trace.Root，detail 仍展示全局链路，需用 search 返回的 entry_span_id 定位入口。
 
-对同一批候选和相同基础筛选条件，total_calls 等于 search 在状态、耗时过滤及返回数量截断之前的匹配数；独立 HTTP 查询的数据可能变化，不承诺始终相等。
+对同一 operation 的相同候选和基础筛选条件，其 count 等于 search 在状态、耗时过滤及返回数量截断之前的匹配数。stats 按 operation 分批且预算更大，实际 search 查询的候选集合可能不同；独立 HTTP 查询的数据也可能变化，不承诺始终相等。多次重查的统计不可直接相加，避免重复计算和混合百分位。

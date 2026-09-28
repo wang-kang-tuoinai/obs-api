@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"math"
 	"net/http"
 	"strconv"
@@ -51,7 +52,7 @@ func (h *TraceHandler) Search(c *gin.Context) {
 	limit := readLimit("limit", 10, 50)
 	fetchLimit := readLimit("fetch_limit", 200, 500)
 	operation := c.Query("operation")
-	traces, fetchedNotices, err := h.provider.FindTraces(c.Request.Context(), tracestore.TraceQuery{
+	batch, err := h.provider.FindTraces(c.Request.Context(), tracestore.TraceQuery{
 		Service: service, Operation: operation, Start: start * 1000, End: end * 1000, Limit: fetchLimit,
 		MinDurationMs: minimum,
 	})
@@ -59,7 +60,11 @@ func (h *TraceHandler) Search(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	notices = append(notices, fetchedNotices...)
+	traces := batch.Traces
+	notices = append(notices, batch.Notices...)
+	if batch.RawCount >= fetchLimit {
+		notices = append(notices, fmt.Sprintf("Jaeger 原始候选达到上限 %d；请缩小窗口查询，排序仅代表候选内 Top N，不保证全窗口最慢", fetchLimit))
+	}
 	notices = append(notices, "仅在本次 Jaeger 返回且成功解析的候选中筛选和排序；空结果不代表整个时间窗口无异常，排序不保证全窗口最慢")
 	notices = append(notices, "每项为指定服务的一次 server 入口调用，以 trace_id + entry_span_id 标识；状态/耗时/错误摘要仅观察该入口及后代。fetched_count 是 Trace 数，matched_count/returned_count 是入口调用数。同一 Trace 可出现多项。")
 	result := tracestore.Search(traces, tracestore.SearchOptions{

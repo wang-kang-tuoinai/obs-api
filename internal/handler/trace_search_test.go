@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"obs-api/internal/tracestore"
 	"strings"
+	"sync"
 	"testing"
 )
 
 type searchProvider struct {
+	mu     sync.Mutex
 	traces []*tracestore.Trace
 	query  tracestore.TraceQuery
 	err    error
@@ -20,9 +22,19 @@ type searchProvider struct {
 func (p *searchProvider) GetTrace(context.Context, string) (*tracestore.Trace, error) {
 	return nil, nil
 }
-func (p *searchProvider) FindTraces(_ context.Context, q tracestore.TraceQuery) ([]*tracestore.Trace, []string, error) {
+func (p *searchProvider) FindTraces(_ context.Context, q tracestore.TraceQuery) (tracestore.TraceBatch, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.query = q
-	return p.traces, []string{"candidate warning"}, p.err
+	return tracestore.TraceBatch{Traces: p.traces, RawCount: len(p.traces), Notices: []string{"candidate warning"}}, p.err
+}
+func (p *searchProvider) GetOperations(_ context.Context, service string) ([]string, error) {
+	entries, _ := tracestore.SelectServiceEntries(p.traces, tracestore.SearchOptions{Service: service, EndMs: 1 << 62})
+	ops := make([]string, 0)
+	for _, entry := range entries {
+		ops = append(ops, entry.Span.Operation)
+	}
+	return ops, p.err
 }
 
 func TestSearchContract(t *testing.T) {

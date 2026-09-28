@@ -1,12 +1,14 @@
 package tracestore
 
+import "encoding/json"
+
 // JaegerResponse 表示 Jaeger 查询返回的完整响应
 type jaegerResponse struct {
-	Data   []jaegerTrace `json:"data"`
-	Total  int           `json:"total"`
-	Limit  int           `json:"limit"`
-	Offset int           `json:"offset"`
-	Errors interface{}   `json:"errors"`
+	Data   []jaegerTrace   `json:"data"`
+	Total  int             `json:"total"`
+	Limit  int             `json:"limit"`
+	Offset int             `json:"offset"`
+	Errors json.RawMessage `json:"errors"`
 }
 
 // Trace 表示一个完整的追踪链路

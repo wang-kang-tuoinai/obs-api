@@ -13,6 +13,7 @@ import (
 	"obs-api/internal/tracestore"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -54,7 +55,16 @@ func main() {
 	lh := handler.NewLogHandler(store)
 	jaegerBaseURL := getEnv("JAEGER_BASE_URL", "http://jaeger:16686")
 	tp := tracestore.NewJaegerProvider(jaegerBaseURL)
-	th := handler.NewTraceHandler(tp)
+	statsOptions := tracestore.DefaultStatsOptions()
+	statsOptions.PerOperationLimit, err = strconv.Atoi(getEnv("TRACE_STATS_PER_OPERATION_LIMIT", "1500"))
+	if err != nil {
+		log.Fatal("TRACE_STATS_PER_OPERATION_LIMIT 必须是整数")
+	}
+	statsOptions.FocusedLimit, err = strconv.Atoi(getEnv("TRACE_STATS_FOCUSED_LIMIT", "5000"))
+	if err != nil || statsOptions.PerOperationLimit < 1 || statsOptions.FocusedLimit <= statsOptions.PerOperationLimit || statsOptions.FocusedLimit > 5000 {
+		log.Fatal("Trace stats 配置须满足 1 <= PER_OPERATION_LIMIT < FOCUSED_LIMIT <= 5000")
+	}
+	th := handler.NewTraceHandler(tp, statsOptions)
 
 	// 注册路由
 	r := router.SetupRouter(db, lh, th)

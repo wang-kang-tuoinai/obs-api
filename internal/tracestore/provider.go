@@ -38,6 +38,13 @@ type Trace struct {
 
 type TraceProvider interface {
 	GetTrace(ctx context.Context, traceID string) (*Trace, error)
-	// fetchNotices 包含候选截断/结构异常的说明；业务入口在 stats/search 层筛选。
-	FindTraces(ctx context.Context, q TraceQuery) ([]*Trace, []string, error)
+	GetOperations(ctx context.Context, service string) ([]string, error) // 仅 server，未按时间窗口过滤。
+	FindTraces(ctx context.Context, q TraceQuery) (TraceBatch, error)
+}
+
+// TraceBatch 保留原始候选数量，不能用解析成功的数量判断是否触及上限。
+type TraceBatch struct {
+	Traces   []*Trace
+	RawCount int
+	Notices  []string
 }
