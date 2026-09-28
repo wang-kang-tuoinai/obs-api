@@ -6,7 +6,14 @@ import "obs-api/internal/tracestore"
 type TraceStatsResponse struct {
 	Service string                  `json:"service"`
 	Stats   *tracestore.StatsResult `json:"stats"`
+	Meta    TraceStatsMeta          `json:"meta"`
 	Notices []string                `json:"notices"`
+}
+
+type TraceStatsMeta struct {
+	Window        TraceWindow `json:"window"`
+	FetchLimit    int         `json:"fetch_limit"`
+	FetchedTraces int         `json:"fetched_traces"`
 }
 
 // TraceWindow 使用秒级 Unix 时间戳，与 HTTP 查询参数一致。

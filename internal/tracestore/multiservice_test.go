@@ -39,9 +39,9 @@ func TestMultiServiceStatsAndSearch(t *testing.T) {
 		s.Status, s.Error = "error", "timeout"
 	}
 	tr := built(t, "t1", other, db, u2, client, p, r, u1)
-	selected, _ := FilterRootEntries([]*Trace{tr}, query("gateway"))
+	selected, _ := SelectServiceEntries([]*Trace{tr}, query("gateway"))
 	stats, _ := Aggregate(selected)
-	if stats.TotalTraces != 1 || stats.ByStatus["degraded"] != 1 {
+	if stats.TotalCalls != 1 || stats.ByStatus["degraded"] != 1 {
 		t.Fatalf("%+v", stats)
 	}
 	services := stats.Entrypoints[0].DownstreamErrorServices
@@ -53,8 +53,14 @@ func TestMultiServiceStatsAndSearch(t *testing.T) {
 			t.Fatalf("multiple errors counted twice: %+v", s)
 		}
 	}
-	if roots, _ := FilterRootEntries([]*Trace{tr}, query("user")); len(roots) != 0 {
-		t.Fatal("downstream was counted as global root")
+	entries, _ := SelectServiceEntries([]*Trace{tr, tr}, query("user"))
+	local, _ := Aggregate(entries)
+	if local.TotalCalls != 2 || local.ByStatus["ok"] != 1 || local.ByStatus["degraded"] != 1 || local.Entrypoints[0].P50Ms != 200 || local.Entrypoints[0].P95Ms != 300 {
+		t.Fatalf("wrong local stats: %+v", local)
+	}
+	downstream := local.Entrypoints[0].DownstreamErrorServices
+	if len(downstream) != 1 || downstream[0].Service != "profile" || downstream[0].RequestCount != 1 {
+		t.Fatalf("sibling errors leaked or duplicate errors counted: %+v", downstream)
 	}
 	q := query("user")
 	q.Operation = "GET /same"
@@ -79,6 +85,11 @@ func TestMultiServiceStatsAndSearch(t *testing.T) {
 	}
 	// 上游请求失败也不改变正常下游入口的分类。
 	tr.Root.Status = "error"
+	entries, _ = SelectServiceEntries([]*Trace{tr}, query("user"))
+	local, _ = Aggregate(entries)
+	if local.ByStatus["failed"] != 0 || local.ByStatus["ok"] != 1 {
+		t.Fatal("upstream error leaked into stats")
+	}
 	q = query("user")
 	q.Status = "ok"
 	if got := Search([]*Trace{tr}, q); len(got.Items) != 1 || got.Items[0].EntrySpanID != "u2" {
@@ -120,11 +131,17 @@ func TestExpectedDuplicateOnlyExcludesMatchingDatabaseError(t *testing.T) {
 			if tr.Status != tc.want {
 				t.Fatalf("got %s want %s", tr.Status, tc.want)
 			}
-			stats, _ := Aggregate([]*Trace{tr})
+			entries, _ := SelectServiceEntries([]*Trace{tr}, query("gateway"))
+			stats, _ := Aggregate(entries)
 			if tc.want == "ok" && len(stats.Entrypoints[0].DownstreamErrorServices) != 0 {
 				t.Fatal("expected error leaked into stats")
 			}
 			search := Search([]*Trace{tr}, query("user"))
+			entries, _ = SelectServiceEntries([]*Trace{tr}, query("user"))
+			local, _ := Aggregate(entries)
+			if local.TotalCalls != 1 || local.ByStatus[tc.want] != 1 {
+				t.Fatalf("local duplicate classification: %+v", local)
+			}
 			if len(search.Items) != 1 || search.Items[0].Status != tc.want {
 				t.Fatalf("%+v", search)
 			}
@@ -156,8 +173,8 @@ func TestForestRetainsDownstreamAndDetailFragments(t *testing.T) {
 	if got := Search([]*Trace{tr}, query("user")); len(got.Items) != 1 || len(got.Items[0].Warnings) == 0 {
 		t.Fatalf("%+v", got)
 	}
-	if got, _ := FilterRootEntries([]*Trace{tr}, query("user")); len(got) != 0 {
-		t.Fatal("orphan promoted to root")
+	if got, warnings := SelectServiceEntries([]*Trace{tr}, query("user")); len(got) != 1 || len(warnings) == 0 || tr.Root != nil {
+		t.Fatal("orphan entry lost or global root mutated")
 	}
 	detail := BuildDetail(tr, 50)
 	if detail.Root != nil || len(detail.Fragments) != 1 || detail.ReturnedSpanCount != 2 || !detail.Incomplete || detail.StartMs != 100 {

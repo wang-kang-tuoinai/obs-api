@@ -8,14 +8,14 @@ import (
 
 // ---- 聚合统计 ----
 
-// StatsResult 是 Aggregate 的输出，描述一批 Trace 的整体健康状况。
+// StatsResult 描述匹配服务入口的调用统计，不是按 Trace 去重的请求统计。
 type StatsResult struct {
-	TotalTraces int              `json:"total_traces"`
+	TotalCalls  int              `json:"total_calls"`
 	ByStatus    map[string]int   `json:"by_status"`   // ok / degraded / failed
 	Entrypoints []EntrypointStat `json:"entrypoints"` // 按调用量降序
 }
 
-// EntrypointStat 描述某个入口操作（root operation）的统计数据。
+// EntrypointStat 描述指定服务的某个 server 入口操作。
 type EntrypointStat struct {
 	Service                 string                   `json:"service"`
 	Operation               string                   `json:"operation"`
@@ -33,46 +33,24 @@ type DownstreamErrorService struct {
 	RequestCount int    `json:"request_count"`
 }
 
-// FilterRootEntries 只保留唯一、明确的 server 根入口，Jaeger 的任意 Span 匹配不足以证明入口匹配。
-func FilterRootEntries(traces []*Trace, q SearchOptions) ([]*Trace, []string) {
-	matched := make([]*Trace, 0)
-	var notices []string
-	seen := map[string]bool{}
-	for _, t := range traces {
-		if t == nil {
-			continue
-		}
-		r := t.Root
-		if r == nil || r.ParentSpanID != "" || r.Kind != "server" {
-			notices = append(notices, fmt.Sprintf("Trace %s 未识别到唯一 server 根入口，未纳入入口统计", t.TraceID))
-			continue
-		}
-		if !matchesEntry(r, q) || seen[t.TraceID] {
-			continue
-		}
-		seen[t.TraceID] = true
-		matched = append(matched, t)
-	}
-	return matched, notices
-}
-
 const smallSampleThreshold = 20
 
-// Aggregate 将已筛选根入口按 service/operation 分组，计算百分位、状态和下游错误请求数。
+// Aggregate 将已筛选并去重的服务入口按 service/operation 分组，只分析入口及后代。
 // 返回聚合结果和可附加到响应 notices 的提示列表。
-func Aggregate(traces []*Trace) (*StatsResult, []string) {
+func Aggregate(entries []ServiceEntry) (*StatsResult, []string) {
 	byStatus := map[string]int{"ok": 0, "degraded": 0, "failed": 0}
 	type entryKey struct{ service, operation string }
-	grouped := map[entryKey][]*Trace{}
+	grouped := map[entryKey][]*Span{}
 	total := 0
 
-	for _, t := range traces {
-		if t == nil || t.Root == nil {
+	for _, entry := range entries {
+		s := entry.Span
+		if s == nil {
 			continue
 		}
-		byStatus[classifyStatus(t.Root)]++
-		key := entryKey{t.Root.Service, t.Root.Operation}
-		grouped[key] = append(grouped[key], t)
+		byStatus[classifyStatus(s)]++
+		key := entryKey{s.Service, s.Operation}
+		grouped[key] = append(grouped[key], s)
 		total++
 	}
 
@@ -82,27 +60,26 @@ func Aggregate(traces []*Trace) (*StatsResult, []string) {
 		durations := make([]float64, 0, len(ts))
 		var failed, degraded int
 		serviceCounts := map[string]int{}
-		for _, t := range ts {
-			notices = append(notices, t.Warnings...)
-			durations = append(durations, t.Root.DurationMs)
-			// 按入口请求去重；同一请求可同时影响多个下游服务。
+		for _, entry := range ts {
+			durations = append(durations, entry.DurationMs)
+			// 按入口调用去重；同一次调用可观察到多个下游服务的错误。
 			seen := map[string]bool{}
 			var collect func(*Span)
 			collect = func(s *Span) {
-				if isErrorSpan(s) && s.Service != "" && s.Service != t.Root.Service {
+				if isErrorSpan(s) && s.Service != "" && s.Service != entry.Service {
 					seen[s.Service] = true
 				}
 				for _, c := range s.Children {
 					collect(c)
 				}
 			}
-			for _, c := range t.Root.Children {
+			for _, c := range entry.Children {
 				collect(c)
 			}
 			for service := range seen {
 				serviceCounts[service]++
 			}
-			switch classifyStatus(t.Root) {
+			switch classifyStatus(entry) {
 			case "failed":
 				failed++
 			case "degraded":
@@ -146,8 +123,9 @@ func Aggregate(traces []*Trace) (*StatsResult, []string) {
 		return eps[i].Operation < eps[j].Operation
 	})
 
+	sort.Strings(notices)
 	return &StatsResult{
-		TotalTraces: total,
+		TotalCalls:  total,
 		ByStatus:    byStatus,
 		Entrypoints: eps,
 	}, notices

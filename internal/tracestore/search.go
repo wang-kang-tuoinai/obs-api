@@ -42,34 +42,21 @@ type SearchResult struct {
 // Search 在已获取候选内筛选、排序并生成摘要，不请求数据源、不修改输入切片。
 func Search(traces []*Trace, q SearchOptions) *SearchResult {
 	matches := make([]TraceSummary, 0)
-	seen := map[[2]string]bool{}
-	for _, t := range traces {
-		if t == nil {
-			continue
-		}
-		var visit func(*Span)
-		visit = func(s *Span) {
-			if s.Kind == "server" && matchesEntry(s, q) && s.DurationMs >= q.MinDurationMs {
-				status := classifyStatus(s)
-				key := [2]string{t.TraceID, s.SpanID}
-				if (q.Status == "" || q.Status == status) && !seen[key] {
-					seen[key] = true
-					item := TraceSummary{TraceID: t.TraceID, EntrySpanID: s.SpanID, Service: s.Service,
-						Operation: s.Operation, StartMs: s.StartMs, DurationMs: s.DurationMs,
-						Status: status, Warnings: append([]string(nil), t.Warnings...)}
-					if origin := findErrorOrigin(s); origin != nil {
-						item.ErrorSummary = &ErrorSummary{Service: origin.Service, SpanID: origin.SpanID,
-							Operation: shortTraceText(origin.Operation), Message: shortTraceText(firstNonEmpty(origin.Error, origin.StatusDesc))}
-					}
-					matches = append(matches, item)
+	entries, _ := SelectServiceEntries(traces, q)
+	for _, entry := range entries {
+		t, s := entry.Trace, entry.Span
+		if s.DurationMs >= q.MinDurationMs {
+			status := classifyStatus(s)
+			if q.Status == "" || q.Status == status {
+				item := TraceSummary{TraceID: t.TraceID, EntrySpanID: s.SpanID, Service: s.Service,
+					Operation: s.Operation, StartMs: s.StartMs, DurationMs: s.DurationMs,
+					Status: status, Warnings: append([]string(nil), t.Warnings...)}
+				if origin := findErrorOrigin(s); origin != nil {
+					item.ErrorSummary = &ErrorSummary{Service: origin.Service, SpanID: origin.SpanID,
+						Operation: shortTraceText(origin.Operation), Message: shortTraceText(firstNonEmpty(origin.Error, origin.StatusDesc))}
 				}
+				matches = append(matches, item)
 			}
-			for _, child := range s.Children {
-				visit(child)
-			}
-		}
-		for _, root := range traceRoots(t) {
-			visit(root)
 		}
 	}
 	sort.Slice(matches, func(i, j int) bool {

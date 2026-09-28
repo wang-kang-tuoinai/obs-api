@@ -29,7 +29,7 @@ func BuildTrace(traceID string, spans []*Span) (*Trace, error) {
 			t.ErrorOrigin, t.ErrorDesc = origin.Operation, firstNonEmpty(origin.Error, origin.StatusDesc)
 		}
 	} else {
-		t.Warnings = append(t.Warnings, "无法确定唯一全局根入口；保留独立片段，顶层状态为 unknown，不纳入根入口统计")
+		t.Warnings = append(t.Warnings, "无法确定唯一全局根入口；保留独立片段，顶层状态为 unknown；可识别的服务入口仍可查询，分类仅基于已采集节点")
 	}
 	if orphans > 0 {
 		t.Warnings = append(t.Warnings,

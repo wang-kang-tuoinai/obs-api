@@ -13,7 +13,7 @@ import (
 //
 // 查询参数：
 //   - service   必填，服务名
-//   - operation 可选，操作名过滤，只能传 root span 的 operation
+//   - operation 可选，指定服务 server 入口的 operation，不要求全局根
 //   - start/end 秒级时间戳（同 /logs/stats），默认最近 1 小时，窗口封顶 7 天
 //   - limit     采样条数上限，合法范围 1-500，默认 200
 func (h *TraceHandler) Stats(c *gin.Context) {
@@ -46,17 +46,24 @@ func (h *TraceHandler) Stats(c *gin.Context) {
 	}
 	notices = append(notices, fetchNotices...)
 
-	selected, selectionNotices := tracestore.FilterRootEntries(traces, tracestore.SearchOptions{
+	selected, selectionNotices := tracestore.SelectServiceEntries(traces, tracestore.SearchOptions{
 		Service: service, Operation: c.Query("operation"), StartMs: start * 1000, EndMs: end * 1000,
 	})
 	notices = append(notices, selectionNotices...)
 	result, resultNotices := tracestore.Aggregate(selected)
 	notices = append(notices, resultNotices...)
-	notices = append(notices, "仅统计已召回的指定服务 server 根入口；下游 request_count 按入口请求去重，服务间不可相加，不代表根因或下游自身错误率。仅排除已确认的 MySQL 重复键业务冲突；4xx 不再直接判为 ok。")
+	notices = append(notices, "仅统计已召回的指定服务 server 入口及其后代，不包含上游或旁支；total_calls 按 (trace_id, entry_span_id) 计数，同一 Trace 可有多次调用。下游 request_count 按入口调用去重，服务间不可相加，不代表根因或下游自身错误率。仅排除已确认的 MySQL 重复键业务冲突。")
+	traceIDs := make(map[string]struct{})
+	for _, trace := range traces {
+		if trace != nil {
+			traceIDs[trace.TraceID] = struct{}{}
+		}
+	}
 
 	c.JSON(http.StatusOK, TraceStatsResponse{
 		Service: service,
 		Stats:   result,
+		Meta:    TraceStatsMeta{Window: TraceWindow{Start: start, End: end}, FetchLimit: limit, FetchedTraces: len(traceIDs)},
 		Notices: notices,
 	})
 }
