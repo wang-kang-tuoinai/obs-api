@@ -8,21 +8,13 @@ type StatsQuery struct {
 	Service string
 	Route   string
 	Method  string
-	Level   string
 	Start   int64 // 秒级
 	End     int64
-	TopN    int // top_templates 取几条
-}
-
-type TemplateItem struct {
-	Template string `json:"template"`
-	Level    string `json:"level"`
-	Count    int64  `json:"count"`
 }
 
 type StatsResult struct {
-	ByLevel      map[string]int64
-	TopTemplates []TemplateItem
+	Summaries []StatsSummary
+	Notices   []string
 }
 
 type Window struct {
@@ -30,18 +22,18 @@ type Window struct {
 	End   int64 `json:"end"`
 }
 type StatsSummary struct {
-	Window       Window           `json:"window"`
-	Total        int64            `json:"total"`
-	ErrorCount   int64            `json:"error_count"`
-	ErrorRate    float64          `json:"error_rate"`
-	ByLevel      map[string]int64 `json:"by_level"`
-	TopTemplates []TemplateItem   `json:"top_templates"`
+	Service    string           `json:"service"`
+	Total      int64            `json:"total"`
+	ErrorCount int64            `json:"error_count"`
+	ErrorRate  float64          `json:"error_rate"`
+	ByLevel    map[string]int64 `json:"by_level"`
 }
 
 type LogStatsResponse struct {
-	Summary     StatsSummary `json:"summary"`
-	GeneratedAt int64        `json:"generated_at"`
-	Notices     []string     `json:"notices,omitempty"`
+	Window      Window         `json:"window"`
+	Summaries   []StatsSummary `json:"summaries"`
+	GeneratedAt int64          `json:"generated_at"`
+	Notices     []string       `json:"notices,omitempty"`
 }
 
 type TemplatesQuery struct {
@@ -72,8 +64,15 @@ type TemplateStat struct {
 }
 
 type TemplatesResponse struct {
+	Service string         `json:"service"`
 	Items   []TemplateStat `json:"items"`
+	HasMore bool           `json:"has_more"`
 	Notices []string       `json:"notices,omitempty"`
+}
+
+type TemplatesResult struct {
+	Items   []TemplateStat
+	HasMore bool
 }
 
 type SearchQuery struct {

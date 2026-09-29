@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 )
 
@@ -35,57 +37,68 @@ func (s *MysqlStore) QueryStats(ctx context.Context, q StatsQuery) (*StatsResult
 		conds = append(conds, "method = ?")
 		args = append(args, q.Method)
 	}
-	if q.Level != "" {
-		conds = append(conds, "level = ?")
-		args = append(args, q.Level)
-	}
 	where := strings.Join(conds, " AND ")
-	// 第一条：按 level 分组
-	levelSQL := "SELECT level, COUNT(*) FROM logs WHERE " + where + " GROUP BY level"
-	byLevel := make(map[string]int64)
+	// 一次分组查询生成各服务统计，不再查询模板。
+	levelSQL := "SELECT COALESCE(service, ''), level, COUNT(*) FROM logs WHERE " + where + " GROUP BY service, level"
+	byService := make(map[string]*StatsSummary)
 	rows, err := s.db.QueryContext(ctx, levelSQL, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var level string
+		var service, level string
 		var count int64
 		// 注意：Scan 的参数顺序必须和 SELECT 列的顺序一致
-		if err := rows.Scan(&level, &count); err != nil {
+		if err := rows.Scan(&service, &level, &count); err != nil {
 			return nil, err
 		}
-		byLevel[level] = count
+		if strings.TrimSpace(service) == "" {
+			service = ""
+		}
+		summary := byService[service]
+		if summary == nil {
+			summary = &StatsSummary{Service: service, ByLevel: map[string]int64{"DEBUG": 0, "INFO": 0, "WARN": 0, "ERROR": 0}}
+			byService[service] = summary
+		}
+		summary.ByLevel[level] += count
+		summary.Total += count
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// 复制并添加元素，避免修改原切片的底层数组
-	tplArgs := make([]any, len(args), len(args)+1)
-	copy(tplArgs, args)
-	tplArgs = append(tplArgs, q.TopN)
-	tplSQL := "SELECT template, level, COUNT(*) c FROM logs WHERE " + where +
-		" GROUP BY template, level ORDER BY c DESC LIMIT ?"
-	var template_count []TemplateItem
-	rows2, err := s.db.QueryContext(ctx, tplSQL, tplArgs...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows2.Close()
-	for rows2.Next() {
-		var tc TemplateItem
-		if err := rows2.Scan(&tc.Template, &tc.Level, &tc.Count); err != nil {
-			return nil, err
+	result := &StatsResult{Summaries: make([]StatsSummary, 0, len(byService))}
+	for _, summary := range byService {
+		summary.ErrorCount = summary.ByLevel[LevelError]
+		if summary.Total > 0 {
+			summary.ErrorRate = math.Round(float64(summary.ErrorCount)/float64(summary.Total)*10000) / 10000
 		}
-		template_count = append(template_count, tc)
+		result.Summaries = append(result.Summaries, *summary)
+		if summary.Service == "" {
+			result.Notices = append(result.Notices, "存在缺少 service 的日志，已归入 service 为空的分组；无法确定服务归属")
+		}
 	}
-	if err := rows2.Err(); err != nil {
-		return nil, err
-	}
-	return &StatsResult{ByLevel: byLevel, TopTemplates: template_count}, nil
+	sort.Slice(result.Summaries, func(i, j int) bool {
+		a, b := result.Summaries[i], result.Summaries[j]
+		if a.ErrorCount != b.ErrorCount {
+			return a.ErrorCount > b.ErrorCount
+		}
+		if a.ByLevel["WARN"] != b.ByLevel["WARN"] {
+			return a.ByLevel["WARN"] > b.ByLevel["WARN"]
+		}
+		return a.Service < b.Service
+	})
+	return result, nil
 }
 
-func (s *MysqlStore) QueryTemplates(ctx context.Context, q TemplatesQuery) ([]TemplateStat, error) {
+func (s *MysqlStore) QueryTemplates(ctx context.Context, q TemplatesQuery) (*TemplatesResult, error) {
+	q.Service = strings.TrimSpace(q.Service)
+	if q.Service == "" {
+		return nil, fmt.Errorf("service 不能为空")
+	}
+	if q.Limit < 1 || q.Limit > 500 {
+		return nil, fmt.Errorf("limit 必须在 1–500 之间")
+	}
 	conds := []string{"ts BETWEEN ? AND ?"}
 	// 数据库里是毫秒而参数是秒，所以需要转换
 	args := []any{q.Start * 1000, q.End * 1000}
@@ -125,10 +138,10 @@ FROM (
 	WHERE ` + where + `
 ) t
 WHERE rn = 1
-ORDER BY cnt DESC
+ORDER BY cnt DESC, template ASC, level ASC
 LIMIT ?`
 
-	args = append(args, q.Limit)
+	args = append(args, q.Limit+1)
 
 	rows, err := s.db.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
@@ -176,7 +189,11 @@ LIMIT ?`
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return items, nil
+	hasMore := len(items) > q.Limit
+	if hasMore {
+		items = items[:q.Limit]
+	}
+	return &TemplatesResult{Items: items, HasMore: hasMore}, nil
 }
 
 func (s *MysqlStore) QuerySearch(ctx context.Context, q SearchQuery) (*SearchResult, error) {

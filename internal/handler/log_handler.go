@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,61 +19,36 @@ func NewLogHandler(store lg.LogStore) *LogHandler {
 	return &LogHandler{store: store}
 }
 
-//TODO - [ ] logs/stats 的 error_count 包含双重计数（access log 5xx + 业务 ERROR），
-//   Agent 目前靠自己推导才能得到真实失败请求数（观察到它两次都推对了，
-//   但依赖"所有 5xx 都走 HandleError"这个可能失效的假设）。
-
-//   候选方案：
-//   1. 加 kind 列（access/business），响应里单独给 failed_requests
-//   2. 消除双重计数（中间件不记 ERROR，或 HandleError 不记）
-//   3. 维持现状，靠模型推导
-
-// TODO 现在Stats如果不指定service查询出来的是所有服务的日志，对于目前单体服务没问题
-// 但是如果是多服务，可能需要标明每个服务的错误数
+// Stats 统计日志条数；同一次请求可以记录多条 ERROR，不能换算为失败请求数。
 func (h *LogHandler) Stats(c *gin.Context) {
+	for _, key := range []string{"level", "top_n"} {
+		if _, supplied := c.Request.URL.Query()[key]; supplied {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "logs/stats 不再支持 " + key + "；模板筛选请使用 logs/templates"})
+			return
+		}
+	}
 	start, end, notices := parseTimeRange(c)
 
-	topN, _ := strconv.Atoi(c.Query("top_n"))
-	if topN <= 0 || topN > 50 {
-		topN = 10
-		notices = append(notices, "top_n 超出范围（1-50），已设为 10")
-	}
-
 	result, err := h.store.QueryStats(c.Request.Context(), lg.StatsQuery{
-		Service: c.Query("service"),
+		Service: strings.TrimSpace(c.Query("service")),
 		Route:   c.Query("route"),
 		Method:  c.Query("method"),
-		Level:   c.Query("level"),
 		Start:   start,
 		End:     end,
-		TopN:    topN,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	// 从 StatsResult 组装 StatsSummary
-	var total, errorCount int64
-	for _, cnt := range result.ByLevel {
-		total += cnt
+	if result.Summaries == nil {
+		result.Summaries = []lg.StatsSummary{}
 	}
-	if ec, ok := result.ByLevel[lg.LevelError]; ok {
-		errorCount = ec
-	}
-	var errorRate float64
-	if total > 0 {
-		errorRate = math.Round(float64(errorCount)/float64(total)*10000) / 10000
-	}
+	notices = append(notices, result.Notices...)
+	notices = append(notices, "error_count/error_rate 按各服务匹配日志计算，不是失败请求数或请求失败率；未出现的服务不代表正常")
 
 	resp := lg.LogStatsResponse{
-		Summary: lg.StatsSummary{
-			Window:       lg.Window{Start: start, End: end},
-			Total:        total,
-			ErrorCount:   errorCount,
-			ErrorRate:    errorRate,
-			ByLevel:      result.ByLevel,
-			TopTemplates: result.TopTemplates,
-		},
+		Window:      lg.Window{Start: start, End: end},
+		Summaries:   result.Summaries,
 		GeneratedAt: time.Now().Unix(),
 		Notices:     notices,
 	}
@@ -94,16 +68,25 @@ func (h *LogHandler) Stats(c *gin.Context) {
 // 2. 定义分层的哨兵错误类型，HandleError 按类型精确分类（正确，成本高）
 // 3. templates 接口支持返回多条 sample 或错误分布（改接口，treat symptom）
 func (h *LogHandler) Templates(c *gin.Context) {
+	service := strings.TrimSpace(c.Query("service"))
+	if service == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "service 为必填参数；未知服务时可先查询 logs/stats"})
+		return
+	}
 	start, end, notices := parseTimeRange(c)
 
-	limit, _ := strconv.Atoi(c.Query("limit"))
-	if limit <= 0 || limit > 500 {
-		limit = 200
-		notices = append(notices, "limit 超出范围（1-500），已设为 200")
+	limit := 200
+	if raw, supplied := c.GetQuery("limit"); supplied || c.Request.URL.Query().Has("limit") {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > 500 {
+			notices = append(notices, "limit 非法或超出范围（1-500），已设为 200")
+		} else {
+			limit = parsed
+		}
 	}
 
-	items, err := h.store.QueryTemplates(c.Request.Context(), lg.TemplatesQuery{
-		Service: c.Query("service"),
+	result, err := h.store.QueryTemplates(c.Request.Context(), lg.TemplatesQuery{
+		Service: service,
 		Level:   c.Query("level"),
 		Route:   c.Query("route"),
 		Method:  c.Query("method"),
@@ -115,7 +98,13 @@ func (h *LogHandler) Templates(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, lg.TemplatesResponse{Items: items, Notices: notices})
+	if result.Items == nil {
+		result.Items = []lg.TemplateStat{}
+	}
+	if result.HasMore {
+		notices = append(notices, "匹配模板组数超过 limit，仅返回部分模板；可增大 limit（最多 500）或缩小时间窗口、level、route、method 范围。当前不支持模板游标分页")
+	}
+	c.JSON(http.StatusOK, lg.TemplatesResponse{Service: service, Items: result.Items, HasMore: result.HasMore, Notices: notices})
 }
 
 func (h *LogHandler) Search(c *gin.Context) {
