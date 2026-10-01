@@ -4,7 +4,7 @@
 
 ## 查询 API
 
-`GET /api/v1/visual/services` 返回 Jaeger 服务目录及 `default_service`，默认服务由 `TRACE_ENTRY_SERVICE` 配置。目录不是健康状态，也不按时间窗口筛选；目录请求失败返回 502，页面仍允许手动输入服务名。
+`GET /api/v1/visual/services` 返回 Jaeger 服务目录及 `default_service`，默认服务由 `TRACE_ENTRY_SERVICE` 配置。页面以服务下拉框展示目录，另有“手动输入服务名”选项；目录不是健康状态，也不按时间窗口筛选。目录请求失败返回 502，页面会显示手动输入框。
 
 `GET /api/v1/visual/traces`
 
