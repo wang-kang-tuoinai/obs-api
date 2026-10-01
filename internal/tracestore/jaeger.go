@@ -27,6 +27,42 @@ func NewJaegerProvider(baseURL string) *JaegerProvider {
 	}
 }
 
+// GetServices discovers names only; presence in the directory is not a health signal.
+func (p *JaegerProvider) GetServices(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/api/services", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Jaeger services HTTP %d", resp.StatusCode)
+	}
+	var payload struct {
+		Data   []string        `json:"data"`
+		Errors json.RawMessage `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	if hasJaegerErrors(payload.Errors) {
+		return nil, fmt.Errorf("Jaeger services 返回错误")
+	}
+	seen := map[string]bool{}
+	result := []string{}
+	for _, name := range payload.Data {
+		if strings.TrimSpace(name) != "" && !seen[name] {
+			seen[name] = true
+			result = append(result, name)
+		}
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
 // TraceQuery 是 FindTraces 的查询参数。
 // Start/End 单位为毫秒（ms），内部会转换成 Jaeger 所需的微秒（µs）。
 type TraceQuery struct {
@@ -172,6 +208,9 @@ func (p *JaegerProvider) fetchAndBuildTraces(ctx context.Context, rawURL string,
 	traces := make([]*Trace, 0, rawCount)
 	var skippedBroken int
 	for _, jt := range jr.Data {
+		if err := ctx.Err(); err != nil {
+			return TraceBatch{}, err
+		}
 		spans := make([]*Span, 0, len(jt.Spans))
 		for _, js := range jt.Spans {
 			spans = append(spans, toSpan(js, jt.Processes))

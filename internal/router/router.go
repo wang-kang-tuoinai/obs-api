@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter(db *sql.DB, lh *handler.LogHandler, th *handler.TraceHandler) *gin.Engine {
+func SetupRouter(db *sql.DB, lh *handler.LogHandler, th *handler.TraceHandler, visual ...*handler.VisualHandler) *gin.Engine {
 	r := gin.Default()
 
 	r.GET("/health", func(c *gin.Context) {
@@ -20,6 +20,10 @@ func SetupRouter(db *sql.DB, lh *handler.LogHandler, th *handler.TraceHandler) *
 	})
 
 	api := r.Group("/api/v1")
+	if len(visual) > 0 {
+		api.GET("/visual/services", visual[0].Services)
+		api.GET("/visual/traces", visual[0].Traces)
+	}
 	{
 		api.GET("/logs/stats", lh.Stats)
 		api.GET("/logs/templates", lh.Templates)

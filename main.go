@@ -65,9 +65,14 @@ func main() {
 		log.Fatal("Trace stats 配置须满足 1 <= PER_OPERATION_LIMIT < FOCUSED_LIMIT <= 5000")
 	}
 	th := handler.NewTraceHandler(tp, statsOptions)
+	visualOptions := tracestore.DefaultVisualOptions()
+	visualOptions.CandidateLimit = statsOptions.PerOperationLimit
+	visualCache := tracestore.NewVisualCache(tp, visualOptions)
+	defer visualCache.Close()
+	vh := handler.NewVisualHandler(visualCache, tp, getEnv("TRACE_ENTRY_SERVICE", "ops-agent-backend"))
 
 	// 注册路由
-	r := router.SetupRouter(db, lh, th)
+	r := router.SetupRouter(db, lh, th, vh)
 
 	addr := getEnv("ADDR", ":8081")
 	srv := &http.Server{
