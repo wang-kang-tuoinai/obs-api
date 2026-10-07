@@ -1,10 +1,11 @@
-package handler
+package handler_test
 
 import (
 	"context"
 	"encoding/json"
 	"github.com/gin-gonic/gin"
 	"net/http/httptest"
+	"obs-api/internal/handler"
 	"obs-api/internal/tracestore"
 	"strconv"
 	"testing"
@@ -29,7 +30,7 @@ func TestVisualHandlerWindowsAndLoading(t *testing.T) {
 	p := emptyVisualProvider{}
 	cache := tracestore.NewVisualCache(p, tracestore.DefaultVisualOptions())
 	defer cache.Close()
-	h := NewVisualHandler(cache, p, "user", nil)
+	h := handler.NewVisualHandler(cache, p, "user", nil)
 	r := gin.New()
 	r.GET("/visual", h.Traces)
 	r.GET("/services", h.Services)

@@ -1,4 +1,4 @@
-package handler
+package handler_test
 
 import (
 	"encoding/json"
@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"obs-api/internal/handler"
 	"strings"
 	"testing"
 
@@ -24,7 +25,7 @@ func TestMultiServiceHTTPContracts(t *testing.T) {
 	}
 	p := &searchProvider{traces: []*tracestore.Trace{tr}}
 	r := gin.New()
-	h := NewTraceHandler(p)
+	h := handler.NewTraceHandler(p)
 	r.GET("/stats", h.Stats)
 	r.GET("/search", h.Search)
 	get := func(path string, out any) {
@@ -38,7 +39,7 @@ func TestMultiServiceHTTPContracts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var stats TraceStatsResponse
+	var stats handler.TraceStatsResponse
 	get("/stats?service=gateway&operation=GET%20%2Fsame", &stats)
 	if stats.Service != "gateway" || stats.Stats.TotalCalls != 1 || stats.Stats.Entrypoints[0].DownstreamErrorServices[0].Service != "other" {
 		t.Fatalf("%+v", stats)
@@ -47,7 +48,7 @@ func TestMultiServiceHTTPContracts(t *testing.T) {
 	if stats.Stats.TotalCalls != 1 || stats.Stats.ByStatus["ok"] != 1 || stats.Stats.Entrypoints[0].P50Ms != 100 || len(stats.Stats.Entrypoints[0].DownstreamErrorServices) != 0 {
 		t.Fatal("stats did not isolate a non-root service")
 	}
-	var found TraceSearchResponse
+	var found handler.TraceSearchResponse
 	get("/search?service=user&operation=GET%20%2Fsame&status=ok", &found)
 	if len(found.Items) != 1 || found.Items[0].EntrySpanID != "user" || found.Items[0].DurationMs != 100 || found.Items[0].ErrorSummary != nil {
 		t.Fatalf("%+v", found)
@@ -78,7 +79,7 @@ func TestStatsHTTPPartialAndTotalFailure(t *testing.T) {
 			}))
 			defer jaeger.Close()
 			r := gin.New()
-			r.GET("/stats", NewTraceHandler(tracestore.NewJaegerProvider(jaeger.URL)).Stats)
+			r.GET("/stats", handler.NewTraceHandler(tracestore.NewJaegerProvider(jaeger.URL)).Stats)
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, httptest.NewRequest("GET", "/stats?service=user&start=1000&end=2000", nil))
 			wantCode := 200
@@ -88,7 +89,7 @@ func TestStatsHTTPPartialAndTotalFailure(t *testing.T) {
 			if w.Code != wantCode {
 				t.Fatal(w.Code, w.Body.String())
 			}
-			var response TraceStatsResponse
+			var response handler.TraceStatsResponse
 			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 				t.Fatal(err)
 			}
@@ -112,14 +113,14 @@ func TestStatsCountsCallsAndReportsCandidateScope(t *testing.T) {
 	}
 	p := &searchProvider{traces: []*tracestore.Trace{tr, tr, nil}}
 	r := gin.New()
-	r.GET("/stats", NewTraceHandler(p).Stats)
+	r.GET("/stats", handler.NewTraceHandler(p).Stats)
 	get := func(query string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest("GET", "/stats?"+query, nil))
 		return w
 	}
 	w := get("service=user&operation=GET%20%2Fusers&start=1000&end=2000")
-	var result TraceStatsResponse
+	var result handler.TraceStatsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}

@@ -1,10 +1,11 @@
-package handler
+package handler_test
 
 import (
 	"context"
 	"encoding/json"
 	"github.com/gin-gonic/gin"
 	"net/http/httptest"
+	"obs-api/internal/handler"
 	"obs-api/internal/logstore"
 	"testing"
 )
@@ -18,7 +19,7 @@ func (blockingHistogram) QueryHistogram(ctx context.Context, q logstore.Histogra
 func TestLogVisualValidationAndInitialResponse(t *testing.T) {
 	cache := logstore.NewLogVisualCache(blockingHistogram{}, logstore.DefaultLogVisualOptions())
 	defer cache.Close()
-	h := NewVisualHandler(nil, emptyVisualProvider{}, "svc", cache)
+	h := handler.NewVisualHandler(nil, emptyVisualProvider{}, "svc", cache)
 	r := gin.New()
 	r.GET("/visual", h.Logs)
 	for _, query := range []string{"", "?service=svc&method=GET", "?service=svc&route=/a", "?service=svc&method=get&route=/a", "?service=svc&start_ms=1", "?service=svc&start_ms=1&end_ms=900002", "?service=svc&operation=GET", "?service=svc&start_ms=-1&end_ms=1"} {

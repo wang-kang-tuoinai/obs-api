@@ -1,10 +1,11 @@
-package handler
+package handler_test
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"obs-api/internal/handler"
 	"strings"
 	"testing"
 
@@ -37,7 +38,7 @@ func (s *fakeLogStore) QuerySearch(context.Context, lg.SearchQuery) (*lg.SearchR
 func callLogHandler(t *testing.T, store *fakeLogStore, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := gin.New()
-	h := NewLogHandler(store)
+	h := handler.NewLogHandler(store)
 	r.GET("/logs/stats", h.Stats)
 	r.GET("/logs/templates", h.Templates)
 	w := httptest.NewRecorder()

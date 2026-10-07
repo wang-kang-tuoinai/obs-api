@@ -1,4 +1,4 @@
-package handler
+package handler_test
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/gin-gonic/gin"
 	"net/http/httptest"
+	"obs-api/internal/handler"
 	"obs-api/internal/tracestore"
 	"strings"
 	"sync"
@@ -45,7 +46,7 @@ func TestSearchContract(t *testing.T) {
 	}
 	p := &searchProvider{traces: []*tracestore.Trace{makeTrace("a", "GET /users", 100), makeTrace("b", "GET /users", 300), makeTrace("c", "redis", 500), makeTrace("short-root", "GET /users", 50)}}
 	r := gin.New()
-	r.GET("/traces/search", NewTraceHandler(p).Search)
+	r.GET("/traces/search", handler.NewTraceHandler(p).Search)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/traces/search?service=app&operation=GET%20%2Fusers&start=1000&end=2000&status=degraded&min_duration_ms=100&limit=1", nil))
 	if w.Code != 200 {
