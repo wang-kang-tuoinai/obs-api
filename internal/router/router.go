@@ -23,6 +23,7 @@ func SetupRouter(db *sql.DB, lh *handler.LogHandler, th *handler.TraceHandler, v
 	if len(visual) > 0 {
 		api.GET("/visual/services", visual[0].Services)
 		api.GET("/visual/traces", visual[0].Traces)
+		api.GET("/visual/logs", visual[0].Logs)
 	}
 	{
 		api.GET("/logs/stats", lh.Stats)

@@ -29,7 +29,7 @@ func TestVisualHandlerWindowsAndLoading(t *testing.T) {
 	p := emptyVisualProvider{}
 	cache := tracestore.NewVisualCache(p, tracestore.DefaultVisualOptions())
 	defer cache.Close()
-	h := NewVisualHandler(cache, p, "user")
+	h := NewVisualHandler(cache, p, "user", nil)
 	r := gin.New()
 	r.GET("/visual", h.Traces)
 	r.GET("/services", h.Services)

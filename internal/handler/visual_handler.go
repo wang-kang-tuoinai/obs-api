@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/gin-gonic/gin"
 	"net/http"
+	"obs-api/internal/logstore"
 	"obs-api/internal/tracestore"
 	"strconv"
 	"strings"
@@ -17,10 +18,11 @@ type VisualHandler struct {
 	cache          *tracestore.VisualCache
 	services       ServiceLister
 	defaultService string
+	logs           *logstore.LogVisualCache
 }
 
-func NewVisualHandler(cache *tracestore.VisualCache, services ServiceLister, defaultService string) *VisualHandler {
-	return &VisualHandler{cache, services, defaultService}
+func NewVisualHandler(cache *tracestore.VisualCache, services ServiceLister, defaultService string, logs *logstore.LogVisualCache) *VisualHandler {
+	return &VisualHandler{cache, services, defaultService, logs}
 }
 func (h *VisualHandler) Services(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)

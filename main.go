@@ -69,7 +69,9 @@ func main() {
 	visualOptions.CandidateLimit = statsOptions.PerOperationLimit
 	visualCache := tracestore.NewVisualCache(tp, visualOptions)
 	defer visualCache.Close()
-	vh := handler.NewVisualHandler(visualCache, tp, getEnv("TRACE_ENTRY_SERVICE", "ops-agent-backend"))
+	logVisualCache := logstore.NewLogVisualCache(store, logstore.DefaultLogVisualOptions())
+	defer logVisualCache.Close()
+	vh := handler.NewVisualHandler(visualCache, tp, getEnv("TRACE_ENTRY_SERVICE", "ops-agent-backend"), logVisualCache)
 
 	// 注册路由
 	r := router.SetupRouter(db, lh, th, vh)
